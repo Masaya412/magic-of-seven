@@ -19,20 +19,30 @@ export default function FieldStackView({
       onClick={onClick}
       cursor={selectable ? "pointer" : "default"}
       p="3"
-      borderWidth="2px"
-      borderColor={selectable ? "purple.300" : "whiteAlpha.200"}
-      borderRadius="xl"
-      bg="whiteAlpha.100"
+      border="1px solid"
+      borderColor={selectable ? "#D7B56D" : "rgba(215,181,109,.28)"}
+      borderRadius="8px"
+      bg="linear-gradient(180deg, rgba(22,18,12,.82), rgba(7,8,10,.88))"
       minW="132px"
-      _hover={selectable ? { borderColor: "purple.200", bg: "whiteAlpha.200" } : undefined}
+      boxShadow={selectable ? "0 0 18px rgba(215,181,109,.18)" : "inset 0 0 18px rgba(0,0,0,.52)"}
+      _hover={
+        selectable
+          ? {
+              borderColor: "#F0D08A",
+              transform: "translateY(-2px)",
+              boxShadow: "0 0 20px rgba(215,181,109,.22)",
+            }
+          : undefined
+      }
+      transition="all .15s ease"
     >
       <VStack align="stretch" gap="2">
         <Box display="flex" justifyContent="center">
           <MagicCard card={stack.baseCard} size="small" />
         </Box>
 
-        <Text fontSize="xs" color="gray.300" textAlign="center">
-          得点はゲーム終了まで非公開
+        <Text fontSize="10px" color="#A79C8A" textAlign="center" letterSpacing="0.05em">
+          POINTS HIDDEN
         </Text>
 
         {stack.effects.length > 0 && (
@@ -41,15 +51,16 @@ export default function FieldStackView({
               <HStack
                 key={`${effect.card.id}-${i}`}
                 justify="space-between"
-                bg="blackAlpha.400"
+                bg="rgba(0,0,0,.40)"
+                border="1px solid rgba(215,181,109,.14)"
                 px="2"
                 py="1"
-                borderRadius="md"
+                borderRadius="4px"
               >
-                <Text fontSize="xs">
+                <Text fontSize="xs" color={effect.isFaceUp ? "#EAD9B7" : "#918673"}>
                   {effect.isFaceUp ? MAGIC_NAMES[effect.card.magic] : "？？？"}
                 </Text>
-                <Text fontSize="xs">
+                <Text fontSize="xs" color={effect.isFaceUp ? "#EAD9B7" : "#918673"}>
                   {effect.isFaceUp ? effect.card.number : "裏"}
                 </Text>
               </HStack>

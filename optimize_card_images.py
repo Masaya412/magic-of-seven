@@ -9,7 +9,7 @@ from PIL import Image
 # =========================
 
 # このスクリプトを seven-magic プロジェクト直下で実行する前提
-CARDS_DIR = Path("public/cards")
+CARDS_DIR = Path("public/cards/revive")
 
 # 元画像のバックアップ先
 BACKUP_DIR = Path("public/cards_backup")

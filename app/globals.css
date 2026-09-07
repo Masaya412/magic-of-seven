@@ -1,0 +1,50 @@
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  background: #050608;
+}
+
+body,
+button,
+input,
+textarea,
+select {
+  font-family: "Yu Mincho", "Hiragino Mincho ProN", "Noto Serif JP", "Times New Roman", serif;
+}
+
+body {
+  color: #f5efe2;
+  background:
+    radial-gradient(circle at 50% 15%, rgba(215, 181, 109, 0.08), transparent 26%),
+    linear-gradient(180deg, #0b0c10 0%, #050608 100%);
+}
+
+::selection {
+  background: rgba(215, 181, 109, 0.28);
+  color: #fff6df;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: #08090c;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #70562f;
+  border: 2px solid #08090c;
+  border-radius: 999px;
+}
