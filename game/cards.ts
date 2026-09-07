@@ -42,3 +42,15 @@ export function shuffle<T>(items: T[]): T[] {
   }
   return a;
 }
+
+
+/**
+ * public/cards/{magic}/{number}.png の画像パスを返す。
+ * GitHub Pagesではリポジトリ名のbasePathを自動で付ける。
+ */
+export function getCardImagePath(
+  card: Pick<Card, "magic" | "number">
+): string {
+  const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+  return `${basePath}/cards/${card.magic}/${card.number}.png`;
+}

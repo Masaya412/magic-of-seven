@@ -1,15 +1,78 @@
 "use client";
-import { Box, Text } from "@chakra-ui/react";
-import { MAGIC_DESCRIPTIONS, MAGIC_NAMES } from "@/game/cards";
+
+import { Box, Image } from "@chakra-ui/react";
+import { getCardImagePath } from "@/game/cards";
 import type { Card } from "@/game/types";
 
-export default function MagicCard({ card, hidden = false, onClick, selected = false }: { card: Card; hidden?: boolean; onClick?: () => void; selected?: boolean }) {
-  if (hidden) return <Box w="110px" h="160px" borderRadius="xl" bg="gray.800" border="2px solid" borderColor="gray.600" display="grid" placeItems="center"><Text fontSize="3xl">✦</Text></Box>;
+type MagicCardProps = {
+  card: Card;
+  hidden?: boolean;
+  onClick?: () => void;
+  selected?: boolean;
+  size?: "normal" | "small";
+};
+
+export default function MagicCard({
+  card,
+  hidden = false,
+  onClick,
+  selected = false,
+  size = "normal",
+}: MagicCardProps) {
+  const width = size === "small" ? "92px" : "170px";
+  const height = size === "small" ? "138px" : "255px";
+
+  const basePath =
+    process.env.NODE_ENV === "production"
+      ? "/magic-of-seven"
+      : "";
+
+  const backImagePath = `${basePath}/cards/card-back.png`;
+
   return (
-    <Box onClick={onClick} cursor={onClick ? "pointer" : "default"} w="110px" minH="160px" p="3" borderRadius="xl" bg="white" color="gray.900" border="3px solid" borderColor={selected ? "purple.500" : "gray.200"} boxShadow="md" _hover={onClick ? { transform: "translateY(-4px)", boxShadow: "lg" } : undefined} transition="0.15s">
-      <Text fontWeight="bold" fontSize="sm">{MAGIC_NAMES[card.magic]}</Text>
-      <Text fontSize="4xl" fontWeight="black" textAlign="center" my="2">{card.number}</Text>
-      <Text fontSize="xs" lineHeight="1.3">{MAGIC_DESCRIPTIONS[card.magic]}</Text>
+    <Box
+      onClick={onClick}
+      cursor={onClick ? "pointer" : "default"}
+      w={width}
+      h={height}
+      borderRadius="lg"
+      overflow="hidden"
+      border="3px solid"
+      borderColor={selected ? "purple.300" : "transparent"}
+      boxShadow={
+        selected
+          ? "0 0 0 3px rgba(183,148,244,.45)"
+          : "lg"
+      }
+      _hover={
+        onClick
+          ? {
+              transform: "translateY(-5px)",
+              boxShadow: "2xl",
+            }
+          : undefined
+      }
+      transition="transform 0.15s ease, box-shadow 0.15s ease"
+      bg="black"
+      flexShrink={0}
+    >
+      <Image
+        src={
+          hidden
+            ? backImagePath
+            : getCardImagePath(card)
+        }
+        alt={
+          hidden
+            ? "カード裏面"
+            : `${card.magic}-${card.number}`
+        }
+        w="100%"
+        h="100%"
+        objectFit="cover"
+        display="block"
+        draggable={false}
+      />
     </Box>
   );
 }

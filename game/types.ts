@@ -52,6 +52,9 @@ export type GameState = {
   lastAction: string;
   lastActionCard: Card | null;
   lastActionActorId: string | null;
+
+  // CPUが伏せて重ねたカードなど、行動確認時にも正体を見せないカードか
+  lastActionCardHidden: boolean;
 };
 
 export type PlayerSetup = {
