@@ -41,7 +41,7 @@ export default function FieldStackView({
           <MagicCard card={stack.baseCard} size="small" />
         </Box>
 
-        <Text fontSize="10px" color="#A79C8A" textAlign="center" letterSpacing="0.05em">
+        <Text fontSize="12px" color="#A79C8A" textAlign="center" letterSpacing="0.05em">
           POINTS HIDDEN
         </Text>
 
@@ -57,10 +57,10 @@ export default function FieldStackView({
                 py="1"
                 borderRadius="4px"
               >
-                <Text fontSize="xs" color={effect.isFaceUp ? "#EAD9B7" : "#918673"}>
+                <Text fontSize="md" color={effect.isFaceUp ? "#EAD9B7" : "#918673"}>
                   {effect.isFaceUp ? MAGIC_NAMES[effect.card.magic] : "？？？"}
                 </Text>
-                <Text fontSize="xs" color={effect.isFaceUp ? "#EAD9B7" : "#918673"}>
+                <Text fontSize="md" color={effect.isFaceUp ? "#EAD9B7" : "#918673"}>
                   {effect.isFaceUp ? effect.card.number : "裏"}
                 </Text>
               </HStack>

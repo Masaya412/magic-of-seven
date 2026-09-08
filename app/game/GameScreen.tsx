@@ -15,6 +15,7 @@ import {
 import MagicCard from "@/components/MagicCard";
 import FieldStackView from "@/components/FieldStackView";
 import ResultRevealScreen from "@/components/ResultRevealScreen";
+import ActionOverlay from "@/components/ActionOverlay";
 import { MAGIC_NAMES } from "@/game/cards";
 import {
   cpuDraftPick,
@@ -46,6 +47,8 @@ export default function GameScreen({
     "none" | "stack" | "destroy" | "truth" | "revive"
   >("none");
   const [awaitingCpuContinue, setAwaitingCpuContinue] =
+    useState(false);
+  const [awaitingLocalContinue, setAwaitingLocalContinue] =
     useState(false);
 
   useEffect(() => {
@@ -93,7 +96,7 @@ export default function GameScreen({
     return (
       <Shell>
         <VStack gap="1" textAlign="center">
-          <Text fontSize="xs" letterSpacing="0.38em" color="#B89758">
+          <Text fontSize="md" letterSpacing="0.38em" color="#B89758">
             DRAFT PHASE
           </Text>
           <Heading fontWeight="500" letterSpacing="0.08em" color="#F3E5BF" textShadow="0 0 20px rgba(215,181,109,0.18)">
@@ -138,7 +141,7 @@ export default function GameScreen({
           </HStack>
         )}
 
-        <Text textAlign="center" color="#9F927C" fontSize="sm" letterSpacing="0.08em">
+        <Text textAlign="center" color="#9F927C" fontSize="md" letterSpacing="0.08em">
           SELECTED {game.draftSelections[p].length} / 7
         </Text>
       </Shell>
@@ -159,8 +162,9 @@ export default function GameScreen({
     (p) => p.id === currentId
   )!;
   const isCpuTurn = current.kind === "cpu";
+  const isLocalBattle = game.players.every((p) => p.kind === "human");
   const interactionsLocked =
-    isCpuTurn || awaitingCpuContinue;
+    isCpuTurn || awaitingCpuContinue || awaitingLocalContinue;
 
   const lastActor = game.lastActionActorId
     ? game.players.find(
@@ -171,6 +175,24 @@ export default function GameScreen({
   const showCpuActionPanel =
     awaitingCpuContinue &&
     lastActor?.kind === "cpu";
+  const showLocalActionPanel =
+    awaitingLocalContinue &&
+    isLocalBattle &&
+    lastActor?.kind === "human";
+  const showActionPanel = showCpuActionPanel || showLocalActionPanel;
+
+  const commitHumanAction = (next: GameState) => {
+    setGame(next);
+    if (isLocalBattle && next.phase === "playing" && next.lastActionActorId) {
+      setAwaitingLocalContinue(true);
+    }
+  };
+
+  const localActionHidden =
+    showLocalActionPanel &&
+    Boolean(game.lastActionCard) &&
+    ["guard", "double", "betray"].includes(game.lastActionCard!.magic) &&
+    /重ね|伏せ/.test(game.lastAction);
 
   const chooseCard = (card: Card) => {
     if (interactionsLocked) return;
@@ -195,7 +217,7 @@ export default function GameScreen({
     } else if (
       selected.magic === "moratorium"
     ) {
-      setGame(
+      commitHumanAction(
         useMoratorium(
           game,
           current.id,
@@ -212,7 +234,7 @@ export default function GameScreen({
     if (!selected || interactionsLocked) return;
 
     if (mode === "stack") {
-      setGame(
+      commitHumanAction(
         stackEffect(
           game,
           current.id,
@@ -223,7 +245,7 @@ export default function GameScreen({
     }
 
     if (mode === "destroy") {
-      setGame(
+      commitHumanAction(
         useDestroy(
           game,
           current.id,
@@ -234,7 +256,7 @@ export default function GameScreen({
     }
 
     if (mode === "truth") {
-      setGame(
+      commitHumanAction(
         useTruth(
           game,
           current.id,
@@ -260,7 +282,7 @@ export default function GameScreen({
     <Shell>
       <HStack w="full" justify="space-between" align="center" gap="4" flexWrap="wrap" pb="3" borderBottom="1px solid rgba(215,181,109,.34)">
         <VStack align="start" gap="0">
-          <Text fontSize="10px" letterSpacing="0.35em" color="#A98A52">THE SEVEN MAGICS</Text>
+          <Text fontSize="12px" letterSpacing="0.35em" color="#A98A52">THE SEVEN MAGICS</Text>
           <Heading fontWeight="500" letterSpacing="0.10em" color="#F3E5BF" textShadow="0 0 18px rgba(215,181,109,.18)">7つの魔法</Heading>
         </VStack>
         <HStack gap="5">
@@ -283,15 +305,15 @@ export default function GameScreen({
         </Heading>
 
         <Text>
-          {showCpuActionPanel
-            ? "コンピュータの行動内容を確認して「次へ」を押してください。"
+          {showActionPanel
+            ? "直前のプレイヤーの行動内容を確認して「次へ」を押してください。"
             : isCpuTurn
               ? cpuStatus(game)
               : "手札からカードを1枚選択してください。"}
         </Text>
       </Box>
 
-      {game.lastAction && !showCpuActionPanel && (
+      {game.lastAction && !showActionPanel && (
         <Box
           px="4"
           py="3"
@@ -299,7 +321,7 @@ export default function GameScreen({
           bg="rgba(10,10,13,.78)"
           border="1px solid rgba(215,181,109,.24)"
         >
-          <Text fontSize="sm">
+          <Text fontSize="md">
             直前の行動：{game.lastAction}
           </Text>
         </Box>
@@ -330,7 +352,7 @@ export default function GameScreen({
             </HStack>
 
             <Text
-              fontSize="xs"
+              fontSize="md"
               color="#8E877A"
               mt="1"
             >
@@ -382,7 +404,7 @@ export default function GameScreen({
           <HStack
             wrap="wrap"
             opacity={
-              awaitingCpuContinue ? 0.5 : 1
+              interactionsLocked ? 0.5 : 1
             }
           >
             {current.hand.map((c) => (
@@ -416,7 +438,7 @@ export default function GameScreen({
           <HStack mt="4" wrap="wrap">
             <Button
               onClick={() => {
-                setGame(
+                commitHumanAction(
                   placeAsPoint(
                     game,
                     current.id,
@@ -470,7 +492,7 @@ export default function GameScreen({
                     key={c.id}
                     variant="outline"
                     onClick={() => {
-                      setGame(
+                      commitHumanAction(
                         useRevive(
                           game,
                           current.id,
@@ -493,7 +515,7 @@ export default function GameScreen({
       )}
 
       <Text
-        fontSize="sm"
+        fontSize="md"
         color="#8E877A"
       >
         手番順:{" "}
@@ -507,107 +529,18 @@ export default function GameScreen({
           .join(" → ")}
       </Text>
 
-      {/* CPU行動確認オーバーレイ */}
-      {showCpuActionPanel && (
-        <Box
-          position="fixed"
-          inset="0"
-          zIndex="1000"
-          bg="rgba(0, 0, 0, 0.78)"
-          display="flex"
-          alignItems="center"
-          justifyContent="center"
-          px="4"
-          py="6"
-          backdropFilter="blur(4px)"
-        >
-          <Box
-            w={{ base: "100%", md: "560px" }}
-            maxW="560px"
-            maxH="90vh"
-            overflowY="auto"
-            bg="linear-gradient(180deg, rgba(23,19,13,.99), rgba(6,7,9,.99))"
-            borderWidth="1px"
-            borderColor="rgba(215,181,109,.58)"
-            borderRadius="10px"
-            boxShadow="2xl"
-            p={{ base: "6", md: "8" }}
-          >
-            <VStack gap="6">
-              <VStack gap="1">
-                <Text
-                  fontSize="xs"
-                  fontWeight="bold"
-                  color="#D7B56D"
-                  letterSpacing="0.22em"
-                >
-                  CPU ACTION
-                </Text>
-
-                <Heading
-                  size="lg"
-                  textAlign="center"
-                >
-                  ◇ {lastActor?.name} の行動
-                </Heading>
-              </VStack>
-
-              {game.lastActionCard && (
-                <MagicCard
-                  card={game.lastActionCard}
-                  hidden={
-                    game.lastActionCardHidden
-                  }
-                />
-              )}
-
-              <Box
-                w="full"
-                px="4"
-                py="4"
-                borderRadius="8px"
-                bg="rgba(255,255,255,.04)"
-                border="1px solid rgba(215,181,109,.20)"
-              >
-                <Text
-                  fontSize={{
-                    base: "md",
-                    md: "lg",
-                  }}
-                  lineHeight="1.8"
-                  textAlign="center"
-                >
-                  {game.lastAction}
-                </Text>
-              </Box>
-
-              {game.lastActionCardHidden && (
-                <Text
-                  fontSize="sm"
-                  color="#8E877A"
-                  textAlign="center"
-                >
-                  伏せられたカードの正体は公開されません
-                </Text>
-              )}
-
-              <Button
-                size="lg"
-                w="full"
-                bg="linear-gradient(180deg, #392A16, #171008)"
-                color="#F3E3B9"
-                border="1px solid #9E7A3C"
-                borderRadius="6px"
-                _hover={{ borderColor: "#D7B56D", boxShadow: "0 0 18px rgba(215,181,109,.22)" }}
-                onClick={() =>
-                  setAwaitingCpuContinue(false)
-                }
-              >
-                次へ
-              </Button>
-            </VStack>
-          </Box>
-        </Box>
+      {showActionPanel && lastActor && (
+        <ActionOverlay
+          actorName={lastActor.name}
+          action={game.lastAction}
+          card={game.lastActionCard}
+          hidden={showCpuActionPanel ? game.lastActionCardHidden : localActionHidden}
+          label={showCpuActionPanel ? "CPU ACTION" : "PLAYER ACTION"}
+          onContinue={() => {
+            setAwaitingCpuContinue(false);
+            setAwaitingLocalContinue(false);
+          }}
+        />
       )}
     </Shell>
   );

@@ -13,10 +13,11 @@ import {
   VStack,
 } from "@chakra-ui/react";
 import GameScreen from "./game/GameScreen";
+import OnlineBattle from "@/components/online/OnlineBattle";
 import { createInitialState, startGame } from "@/game/engine";
 import type { GameState, PlayerSetup } from "@/game/types";
 
-type GameMode = "cpu" | "local";
+type GameMode = "cpu" | "local" | "online";
 
 const goldButtonProps = {
   bg: "linear-gradient(180deg, #392A16, #171008)",
@@ -33,12 +34,17 @@ export default function Home() {
   const [game, setGame] = useState<GameState>(createInitialState());
   const [mode, setMode] = useState<GameMode>("cpu");
   const [count, setCount] = useState(2);
+  const [onlineOpen, setOnlineOpen] = useState(false);
   const [names, setNames] = useState([
     "あなた",
     "プレイヤー2",
     "プレイヤー3",
     "プレイヤー4",
   ]);
+
+  if (onlineOpen) {
+    return <OnlineBattle onExit={() => setOnlineOpen(false)} />;
+  }
 
   if (game.phase !== "setup") {
     return (
@@ -98,7 +104,7 @@ export default function Home() {
         <VStack gap={{ base: "7", md: "10" }}>
           <VStack textAlign="center" gap="2">
             <Text
-              fontSize={{ base: "10px", md: "xs" }}
+              fontSize={{ base: "12px", md: "sm" }}
               letterSpacing="0.42em"
               color="#B89758"
             >
@@ -133,10 +139,10 @@ export default function Home() {
           >
             <VStack align="stretch" gap="7">
               <Box>
-                <Text mb="3" fontSize="xs" color="#B89758" letterSpacing="0.28em">
+                <Text mb="3" fontSize="md" color="#B89758" letterSpacing="0.28em">
                   GAME MODE
                 </Text>
-                <SimpleGrid columns={{ base: 1, sm: 2 }} gap="3">
+                <SimpleGrid columns={{ base: 1, sm: 3 }} gap="3">
                   <Button
                     {...goldButtonProps}
                     opacity={mode === "cpu" ? 1 : 0.62}
@@ -153,11 +159,20 @@ export default function Home() {
                   >
                     ローカル対戦
                   </Button>
+                  <Button
+                    {...goldButtonProps}
+                    opacity={mode === "online" ? 1 : 0.62}
+                    boxShadow={mode === "online" ? "0 0 18px rgba(215,181,109,.18)" : "none"}
+                    onClick={() => setMode("online")}
+                  >
+                    オンライン対戦
+                  </Button>
                 </SimpleGrid>
               </Box>
 
+              {mode !== "online" && (
               <Box>
-                <Text mb="3" fontSize="xs" color="#B89758" letterSpacing="0.28em">
+                <Text mb="3" fontSize="md" color="#B89758" letterSpacing="0.28em">
                   PLAYERS
                 </Text>
                 <SimpleGrid columns={3} gap="3">
@@ -174,9 +189,11 @@ export default function Home() {
                   ))}
                 </SimpleGrid>
               </Box>
+              )}
 
+              {mode !== "online" && (
               <Box>
-                <Text mb="3" fontSize="xs" color="#B89758" letterSpacing="0.28em">
+                <Text mb="3" fontSize="md" color="#B89758" letterSpacing="0.28em">
                   PLAYER NAME
                 </Text>
 
@@ -195,7 +212,7 @@ export default function Home() {
                         setNames(next);
                       }}
                     />
-                    <HStack color="#AFA594" fontSize="sm" flexWrap="wrap">
+                    <HStack color="#AFA594" fontSize="md" flexWrap="wrap">
                       <Text>対戦相手：</Text>
                       <Text>
                         {Array.from({ length: count - 1 }, (_, i) => `CPU ${i + 1}`).join(" / ")}
@@ -223,6 +240,7 @@ export default function Home() {
                   </VStack>
                 )}
               </Box>
+              )}
 
               <Button
                 {...goldButtonProps}
@@ -230,9 +248,15 @@ export default function Home() {
                 size="lg"
                 mt="1"
                 letterSpacing="0.12em"
-                onClick={start}
+                onClick={() => {
+                  if (mode === "online") {
+                    setOnlineOpen(true);
+                    return;
+                  }
+                  start();
+                }}
               >
-                ゲーム開始
+                {mode === "online" ? "オンラインロビーへ" : "ゲーム開始"}
               </Button>
             </VStack>
           </Box>

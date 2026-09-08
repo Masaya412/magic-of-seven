@@ -129,7 +129,7 @@ export default function ResultRevealScreen({
     <VStack gap={{ base: "4", md: "6" }} align="stretch" w="full">
       <HStack justify="space-between" align="center" wrap="wrap" gap="3">
         <VStack align="start" gap="0">
-          <Text fontSize="10px" letterSpacing="0.38em" color="#B89758">
+          <Text fontSize="12px" letterSpacing="0.38em" color="#B89758">
             SCORE REVEAL
           </Text>
           <Heading
@@ -145,7 +145,7 @@ export default function ResultRevealScreen({
 
         <VStack align={{ base: "stretch", sm: "end" }} gap="2">
           <HStack gap="1" flexWrap="wrap" justify={{ base: "start", sm: "end" }}>
-            <Text fontSize="10px" color="#9C855D" letterSpacing="0.16em" mr="1">
+            <Text fontSize="12px" color="#9C855D" letterSpacing="0.16em" mr="1">
               REVEAL SPEED
             </Text>
             {(["slow", "normal", "fast"] as RevealSpeed[]).map((value) => (
@@ -201,14 +201,14 @@ export default function ResultRevealScreen({
         >
           <VStack gap="4" h="full">
             <VStack gap="0" textAlign="center">
-              <Text fontSize="10px" letterSpacing="0.3em" color="#9C855D">
+              <Text fontSize="12px" letterSpacing="0.3em" color="#9C855D">
                 PLAYER {frame.playerIndex + 1} / {game.players.length}
               </Text>
               <Heading size="lg" color={TEXT} fontWeight="500">
                 {player.name}
               </Heading>
               {player.kind === "cpu" && (
-                <Text fontSize="xs" color="#A99772" letterSpacing="0.2em">
+                <Text fontSize="md" color="#A99772" letterSpacing="0.2em">
                   ◇ CPU PLAYER
                 </Text>
               )}
@@ -223,7 +223,7 @@ export default function ResultRevealScreen({
               borderRadius="6px"
               textAlign="center"
             >
-              <Text fontSize="xs" color={MUTED} letterSpacing="0.18em">
+              <Text fontSize="md" color={MUTED} letterSpacing="0.18em">
                 CURRENT TOTAL
               </Text>
               <Text
@@ -235,7 +235,7 @@ export default function ResultRevealScreen({
                 textShadow="0 0 22px rgba(215,181,109,.18)"
               >
                 {formatSignedTotal(shownPlayerTotal)}
-                <Text as="span" fontSize="sm" ml="2" color={MUTED}>
+                <Text as="span" fontSize="md" ml="2" color={MUTED}>
                   pt
                 </Text>
               </Text>
@@ -273,7 +273,7 @@ export default function ResultRevealScreen({
         </Box>
       </SimpleGrid>
 
-      <HStack justify="center" gap="3" color="#8F826E" fontSize="xs" flexWrap="wrap">
+      <HStack justify="center" gap="3" color="#8F826E" fontSize="md" flexWrap="wrap">
         <Text>場カード {Math.min(frame.stackIndex + 1, Math.max(player.field.length, 1))} / {player.field.length}</Text>
         <Text>◆</Text>
         <Text>伏せカードは結果集計で初めて公開されます</Text>
@@ -299,10 +299,10 @@ function StackReveal({
   return (
     <VStack gap="4" h="full" justify="space-between">
       <VStack gap="0">
-        <Text fontSize="10px" color="#9C855D" letterSpacing="0.3em">
+        <Text fontSize="12px" color="#9C855D" letterSpacing="0.3em">
           FIELD CARD
         </Text>
-        <Text fontSize="sm" color="#D6C8AE">
+        <Text fontSize="md" color="#D6C8AE">
           ベース {stack.baseCard.number}点
         </Text>
       </VStack>
@@ -341,7 +341,7 @@ function StackReveal({
         borderRadius="6px"
         textAlign="center"
       >
-        <Text fontSize="xs" color={MUTED} letterSpacing="0.15em">
+        <Text fontSize="md" color={MUTED} letterSpacing="0.15em">
           CARD SCORE
         </Text>
         <Text
@@ -352,9 +352,9 @@ function StackReveal({
           transition="color .25s ease"
         >
           {shownStackScore}
-          <Text as="span" fontSize="sm" ml="2" color={MUTED}>pt</Text>
+          <Text as="span" fontSize="md" ml="2" color={MUTED}>pt</Text>
         </Text>
-        <Text mt="2" minH="24px" fontSize="sm" color="#D8CDB9">
+        <Text mt="2" minH="24px" fontSize="md" color="#D8CDB9">
           {calculationText}
         </Text>
       </Box>
@@ -522,7 +522,7 @@ function FinalRanking({
   return (
     <VStack gap="6" align="stretch" w="full">
       <VStack gap="1" textAlign="center">
-        <Text fontSize="xs" letterSpacing="0.42em" color={GOLD}>FINAL RESULT</Text>
+        <Text fontSize="md" letterSpacing="0.42em" color={GOLD}>FINAL RESULT</Text>
         <Heading
           fontSize={{ base: "3xl", md: "5xl" }}
           fontWeight="500"
@@ -561,14 +561,14 @@ function FinalRanking({
                     fontFamily="serif"
                   >
                     {index + 1}
-                    <Text as="span" fontSize="xs" ml="1">位</Text>
+                    <Text as="span" fontSize="md" ml="1">位</Text>
                   </Text>
                   <VStack align="start" gap="0" minW="0">
                     <Text fontSize={{ base: "lg", md: "xl" }} color={TEXT} truncate>
                       {player.name}
                     </Text>
                     {player.kind === "cpu" && (
-                      <Text fontSize="10px" color="#8F8067" letterSpacing="0.17em">CPU PLAYER</Text>
+                      <Text fontSize="12px" color="#8F8067" letterSpacing="0.17em">CPU PLAYER</Text>
                     )}
                   </VStack>
                 </HStack>
@@ -578,7 +578,7 @@ function FinalRanking({
                   fontVariantNumeric="tabular-nums"
                 >
                   {calculatePlayerScore(player)}
-                  <Text as="span" fontSize="xs" ml="2" color={MUTED}>pt</Text>
+                  <Text as="span" fontSize="md" ml="2" color={MUTED}>pt</Text>
                 </Text>
               </HStack>
             </Box>
@@ -596,7 +596,7 @@ function FinalRanking({
         borderTop="1px solid rgba(215,181,109,.32)"
         borderBottom="1px solid rgba(215,181,109,.32)"
       >
-        <Text fontSize="10px" color="#B89758" letterSpacing="0.4em">VICTORY</Text>
+        <Text fontSize="12px" color="#B89758" letterSpacing="0.4em">VICTORY</Text>
         <Heading mt="2" color={GOLD_BRIGHT} fontWeight="500" letterSpacing="0.08em">
           {winners}
         </Heading>
@@ -672,11 +672,11 @@ function buildRevealFrames(players: Player[]): RevealFrame[] {
         duration: 1550,
       });
 
-      // 場では effects の末尾がいちばん上に重なっているカード。
-      // リザルトでは「上の伏せカード → 下の伏せカード」の順に、
-      // 1枚ずつ開示する。真実で公開済みだったカードもリザルトでは
-      // いったん裏向きから始め、この順番で改めて公開する。
-      const revealOrder = [...stack.effects].reverse();
+      // effects はベースカードに近い順に追加され、末尾がいちばん上のカード。
+      // リザルトでは「下の伏せカード → 上の伏せカード」の順に、
+      // ベースカードに近い側から1枚ずつ開示する。真実で公開済みだった
+      // カードもリザルトではいったん裏向きから始め、この順番で改めて公開する。
+      const revealOrder = [...stack.effects];
 
       revealOrder.forEach((effect, revealIndex) => {
         revealedEffectIds.push(effect.card.id);

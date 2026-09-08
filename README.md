@@ -6,6 +6,7 @@ Next.js / TypeScript / Chakra UIで作成したカードゲームです。
 
 ```bash
 npm install
+npm install firebase
 npm run dev
 ```
 
