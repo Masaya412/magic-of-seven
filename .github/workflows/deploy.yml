@@ -21,16 +21,32 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 20
           cache: npm
 
       - name: Install dependencies
         run: npm install
+
+      - name: Check Firebase variables
+        run: |
+          if [ -n "$NEXT_PUBLIC_FIREBASE_API_KEY" ]; then echo "API_KEY=OK"; else echo "API_KEY=MISSING"; fi
+          if [ -n "$NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN" ]; then echo "AUTH_DOMAIN=OK"; else echo "AUTH_DOMAIN=MISSING"; fi
+          if [ -n "$NEXT_PUBLIC_FIREBASE_PROJECT_ID" ]; then echo "PROJECT_ID=OK"; else echo "PROJECT_ID=MISSING"; fi
+          if [ -n "$NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET" ]; then echo "STORAGE_BUCKET=OK"; else echo "STORAGE_BUCKET=MISSING"; fi
+          if [ -n "$NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID" ]; then echo "MESSAGING_SENDER_ID=OK"; else echo "MESSAGING_SENDER_ID=MISSING"; fi
+          if [ -n "$NEXT_PUBLIC_FIREBASE_APP_ID" ]; then echo "APP_ID=OK"; else echo "APP_ID=MISSING"; fi
+        env:
+          NEXT_PUBLIC_FIREBASE_API_KEY: ${{ vars.NEXT_PUBLIC_FIREBASE_API_KEY }}
+          NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ${{ vars.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN }}
+          NEXT_PUBLIC_FIREBASE_PROJECT_ID: ${{ vars.NEXT_PUBLIC_FIREBASE_PROJECT_ID }}
+          NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: ${{ vars.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET }}
+          NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: ${{ vars.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID }}
+          NEXT_PUBLIC_FIREBASE_APP_ID: ${{ vars.NEXT_PUBLIC_FIREBASE_APP_ID }}
 
       - name: Build
         run: npm run build
