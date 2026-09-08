@@ -24,7 +24,7 @@ import {
   useRevive,
   useTruth,
 } from "@/game/engine";
-import type { Card, GameState } from "@/game/types";
+import type { Card, GameState, TurnOrderPreference } from "@/game/types";
 import { auth, db } from "./firebase";
 import type {
   HostGameState,
@@ -112,7 +112,11 @@ async function createUniqueRoomCode() {
   throw new Error("合言葉を生成できませんでした。もう一度お試しください。");
 }
 
-export async function createOnlineRoom(name: string, maxPlayers: 2 | 3 | 4 = 2): Promise<OnlineSession> {
+export async function createOnlineRoom(
+  name: string,
+  maxPlayers: 2 | 3 | 4 = 2,
+  turnOrderPreference: TurnOrderPreference = "random"
+): Promise<OnlineSession> {
   const { db } = requireFirebase();
   const uid = await ensureAnonymousUser();
   const code = await createUniqueRoomCode();
@@ -125,6 +129,7 @@ export async function createOnlineRoom(name: string, maxPlayers: 2 | 3 | 4 = 2):
       hostUid: uid,
       status: "waiting",
       maxPlayers,
+      turnOrderPreference,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     } satisfies OnlineRoom);
@@ -274,7 +279,8 @@ export async function startOnlineGame(roomCode: string) {
   }
 
   const game = startGame(
-    players.map((p) => ({ name: p.name, kind: "human" as const }))
+    players.map((p) => ({ name: p.name, kind: "human" as const })),
+    room.turnOrderPreference ?? "random"
   );
   const playerUids: Record<string, string> = {};
   players.forEach((p, index) => {
@@ -394,12 +400,10 @@ async function processAction(roomCode: string, actionId: string) {
         );
 
         const privateDrawNotices: Record<string, Card | null> = {};
-        if (action.type === "moratorium" && nextGame.deck.length === hostState.game.deck.length - 1) {
-          const beforePlayer = hostState.game.players.find((p) => p.id === actorPlayerId);
-          const afterPlayer = nextGame.players.find((p) => p.id === actorPlayerId);
-          const beforeIds = new Set(beforePlayer?.hand.map((c) => c.id) ?? []);
-          const drawn = afterPlayer?.hand.find((c) => !beforeIds.has(c.id)) ?? null;
-          if (drawn) privateDrawNotices[actorPlayerId] = drawn;
+        // 復活で墓場から戻したモラトリアムを後で使用した場合も、
+        // engine側のlastDrawnCardを本人のprivate viewだけへ通知する。
+        if (action.type === "moratorium" && nextGame.lastDrawnCard) {
+          privateDrawNotices[actorPlayerId] = nextGame.lastDrawnCard;
         }
 
         nextHostState = {

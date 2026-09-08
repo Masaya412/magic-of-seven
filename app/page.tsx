@@ -15,9 +15,16 @@ import {
 import GameScreen from "./game/GameScreen";
 import OnlineBattle from "@/components/online/OnlineBattle";
 import { createInitialState, startGame } from "@/game/engine";
-import type { GameState, PlayerSetup } from "@/game/types";
+import type { GameState, PlayerSetup, TurnOrderPreference } from "@/game/types";
 
 type GameMode = "cpu" | "local" | "online";
+
+
+const CPU_LEVEL_LABELS: Record<number, string> = {
+  11: "超級",
+  12: "極級",
+  13: "神級",
+};
 
 const goldButtonProps = {
   bg: "linear-gradient(180deg, #392A16, #171008)",
@@ -36,6 +43,7 @@ export default function Home() {
   const [count, setCount] = useState(2);
   const [onlineOpen, setOnlineOpen] = useState(false);
   const [cpuLevels, setCpuLevels] = useState([5, 5, 5]);
+  const [turnOrderPreference, setTurnOrderPreference] = useState<TurnOrderPreference>("random");
   const [names, setNames] = useState([
     "あなた",
     "プレイヤー2",
@@ -76,7 +84,7 @@ export default function Home() {
       }));
     }
 
-    setGame(startGame(setups));
+    setGame(startGame(setups, turnOrderPreference));
   };
 
   return (
@@ -196,6 +204,36 @@ export default function Home() {
               {mode !== "online" && (
               <Box>
                 <Text mb="3" fontSize="md" color="#B89758" letterSpacing="0.28em">
+                  TURN ORDER
+                </Text>
+                <SimpleGrid columns={3} gap="3">
+                  {[
+                    { value: "first" as const, label: "先攻" },
+                    { value: "last" as const, label: "後攻" },
+                    { value: "random" as const, label: "ランダム" },
+                  ].map((option) => (
+                    <Button
+                      key={option.value}
+                      {...goldButtonProps}
+                      opacity={turnOrderPreference === option.value ? 1 : 0.58}
+                      boxShadow={turnOrderPreference === option.value ? "0 0 18px rgba(215,181,109,.18)" : "none"}
+                      onClick={() => setTurnOrderPreference(option.value)}
+                    >
+                      {option.label}
+                    </Button>
+                  ))}
+                </SimpleGrid>
+                <Text mt="2" color="#8F8370" fontSize="sm">
+                  {count === 2
+                    ? "先攻＝プレイヤー1が最初、後攻＝プレイヤー1が2番目。ランダムでは順番を抽選します。"
+                    : "先攻＝プレイヤー1が最初、後攻＝プレイヤー1が最後。ほかのプレイヤーの順番は抽選します。"}
+                </Text>
+              </Box>
+              )}
+
+              {mode !== "online" && (
+              <Box>
+                <Text mb="3" fontSize="md" color="#B89758" letterSpacing="0.28em">
                   PLAYER NAME
                 </Text>
 
@@ -234,10 +272,10 @@ export default function Home() {
                         >
                           <HStack justify="space-between" mb="2" flexWrap="wrap">
                             <Text color="#E8D7B2">CPU {cpuIndex + 1}</Text>
-                            <Text color="#F3D48A" fontWeight="600">Lv.{cpuLevels[cpuIndex]}</Text>
+                            <Text color="#F3D48A" fontWeight="600">Lv.{cpuLevels[cpuIndex]}{CPU_LEVEL_LABELS[cpuLevels[cpuIndex]] ? ` ・ ${CPU_LEVEL_LABELS[cpuLevels[cpuIndex]]}` : ""}</Text>
                           </HStack>
-                          <SimpleGrid columns={{ base: 5, md: 10 }} gap="2">
-                            {Array.from({ length: 10 }, (_, levelIndex) => {
+                          <SimpleGrid columns={{ base: 5, sm: 7, md: 13 }} gap="2">
+                            {Array.from({ length: 13 }, (_, levelIndex) => {
                               const level = levelIndex + 1;
                               const active = cpuLevels[cpuIndex] === level;
                               return (
@@ -247,9 +285,10 @@ export default function Home() {
                                   minW="0"
                                   px="1"
                                   border="1px solid"
-                                  borderColor={active ? "#D7B56D" : "rgba(215,181,109,.24)"}
-                                  bg={active ? "rgba(215,181,109,.18)" : "rgba(0,0,0,.22)"}
-                                  color={active ? "#F3D48A" : "#B6AA97"}
+                                  borderColor={active ? "#D7B56D" : level >= 11 ? "rgba(243,212,138,.42)" : "rgba(215,181,109,.24)"}
+                                  bg={active ? "rgba(215,181,109,.18)" : level >= 11 ? "rgba(98,67,20,.28)" : "rgba(0,0,0,.22)"}
+                                  color={active ? "#FFF0B8" : level >= 11 ? "#F3D48A" : "#B6AA97"}
+                                  fontWeight={level >= 11 ? "700" : "500"}
                                   onClick={() => {
                                     const next = [...cpuLevels];
                                     next[cpuIndex] = level;
@@ -264,7 +303,7 @@ export default function Home() {
                         </Box>
                       ))}
                       <Text color="#8F8370" fontSize="sm">
-                        Lv.1が最も易しく、Lv.10が最も強い設定です。CPUごとに個別設定できます。
+                        Lv.1〜10に加え、Lv.11「超級」・Lv.12「極級」・Lv.13「神級」を追加しています。Lv.11以上は候補手を比較して判断する超高難易度です。CPUごとに個別設定できます。
                       </Text>
                     </VStack>
                   </VStack>

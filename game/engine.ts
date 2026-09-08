@@ -1,20 +1,20 @@
 import { createDeck, shuffle } from "./cards";
 import { calculatePlayerScore } from "./scoring";
-import type { Card, FieldStack, GameState, Player, PlayerSetup } from "./types";
+import type { Card, FieldStack, GameState, Player, PlayerSetup, TurnOrderPreference } from "./types";
 
 export function createInitialState(): GameState {
   return {
     phase: "setup", players: [], deck: [], graveyard: [], turnOrder: [], currentTurn: 0,
     draftPacks: [], draftSelections: [], draftRound: 0, draftPlayerIndex: 0, winnerIds: [],
-    lastAction: "", lastActionCard: null, lastActionActorId: null, lastActionCardHidden: false,
+    lastAction: "", lastActionCard: null, lastActionActorId: null, lastActionCardHidden: false, lastDrawnCard: null,
   };
 }
 
 function clampCpuLevel(value: number | undefined): number {
-  return Math.max(1, Math.min(10, Math.round(value ?? 5)));
+  return Math.max(1, Math.min(13, Math.round(value ?? 5)));
 }
 
-export function startGame(setups: PlayerSetup[]): GameState {
+export function startGame(setups: PlayerSetup[], turnOrderPreference: TurnOrderPreference = "random"): GameState {
   const deck = shuffle(createDeck());
   const players: Player[] = setups.map((setup, i) => ({
     id: `p${i + 1}`,
@@ -24,10 +24,18 @@ export function startGame(setups: PlayerSetup[]): GameState {
     hand: [], field: [],
   }));
   const packs: Card[][] = players.map(() => deck.splice(0, 7));
+  const playerIds = players.map((p) => p.id);
+  const others = shuffle(playerIds.slice(1));
+  const turnOrder =
+    turnOrderPreference === "first"
+      ? [playerIds[0], ...others]
+      : turnOrderPreference === "last"
+        ? [...others, playerIds[0]]
+        : shuffle(playerIds);
   return {
-    phase: "draft", players, deck, graveyard: [], turnOrder: shuffle(players.map((p) => p.id)), currentTurn: 0,
+    phase: "draft", players, deck, graveyard: [], turnOrder, currentTurn: 0,
     draftPacks: packs, draftSelections: players.map(() => []), draftRound: 0, draftPlayerIndex: 0, winnerIds: [],
-    lastAction: "ドラフトを開始しました。", lastActionCard: null, lastActionActorId: null, lastActionCardHidden: false,
+    lastAction: "ドラフトを開始しました。", lastActionCard: null, lastActionActorId: null, lastActionCardHidden: false, lastDrawnCard: null,
   };
 }
 
@@ -58,6 +66,7 @@ export function draftPick(state: GameState, cardId: string): GameState {
 
 export function placeAsPoint(state: GameState, playerId: string, cardId: string): GameState {
   const s = structuredClone(state);
+  s.lastDrawnCard = null;
   const player = s.players.find((p) => p.id === playerId)!;
   const idx = player.hand.findIndex((c) => c.id === cardId);
   if (idx < 0) return state;
@@ -70,6 +79,7 @@ export function placeAsPoint(state: GameState, playerId: string, cardId: string)
 
 export function stackEffect(state: GameState, playerId: string, cardId: string, targetStackId: string): GameState {
   const s = structuredClone(state);
+  s.lastDrawnCard = null;
   const player = s.players.find((p) => p.id === playerId)!;
   const idx = player.hand.findIndex((c) => c.id === cardId);
   if (idx < 0) return state;
@@ -94,6 +104,7 @@ export function stackEffect(state: GameState, playerId: string, cardId: string, 
 
 export function useDestroy(state: GameState, playerId: string, cardId: string, targetStackId: string): GameState {
   const s = structuredClone(state);
+  s.lastDrawnCard = null;
   const source = removeHandCard(s, playerId, cardId); if (!source) return state;
   s.graveyard.push(source);
   const sourcePlayer = s.players.find((p) => p.id === playerId)!;
@@ -115,11 +126,13 @@ export function useDestroy(state: GameState, playerId: string, cardId: string, t
 
 export function useMoratorium(state: GameState, playerId: string, cardId: string): GameState {
   const s = structuredClone(state);
+  s.lastDrawnCard = null;
   const source = removeHandCard(s, playerId, cardId); if (!source) return state;
   s.graveyard.push(source);
   const drawn = s.deck.pop();
   const player = s.players.find((p) => p.id === playerId)!;
   if (drawn) player.hand.push(drawn);
+  s.lastDrawnCard = drawn ?? null;
   s.lastAction = drawn ? `${player.name}は${describeCard(source)}を使い、山札から1枚引きました。` : `${player.name}は${describeCard(source)}を使いましたが、山札は空でした。`;
   s.lastActionCard = source; s.lastActionActorId = player.id; s.lastActionCardHidden = false;
   return endTurn(s);
@@ -127,6 +140,7 @@ export function useMoratorium(state: GameState, playerId: string, cardId: string
 
 export function useRevive(state: GameState, playerId: string, cardId: string, targetCardId: string): GameState {
   const s = structuredClone(state);
+  s.lastDrawnCard = null;
   const source = removeHandCard(s, playerId, cardId); if (!source) return state;
   s.graveyard.push(source);
   const idx = s.graveyard.findIndex((c) => c.id === targetCardId && c.number === source.number && c.id !== source.id);
@@ -140,6 +154,7 @@ export function useRevive(state: GameState, playerId: string, cardId: string, ta
 
 export function useTruth(state: GameState, playerId: string, cardId: string, targetStackId: string): GameState {
   const s = structuredClone(state);
+  s.lastDrawnCard = null;
   const source = removeHandCard(s, playerId, cardId); if (!source) return state;
   s.graveyard.push(source);
   const target = findStack(s, targetStackId);

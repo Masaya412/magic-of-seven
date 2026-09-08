@@ -30,11 +30,12 @@ export type FieldStack = {
 };
 
 export type PlayerKind = "human" | "cpu";
+export type TurnOrderPreference = "first" | "last" | "random";
 export type Player = {
   id: string;
   name: string;
   kind: PlayerKind;
-  /** CPUのみ使用。1（弱い）〜10（強い）。 */
+  /** CPUのみ使用。1（弱い）〜13（超高難易度）。 */
   cpuLevel?: number;
   hand: Card[];
   field: FieldStack[];
@@ -57,6 +58,8 @@ export type GameState = {
   lastActionCard: Card | null;
   lastActionActorId: string | null;
   lastActionCardHidden: boolean;
+  /** 直前のモラトリアムで引いたカード。公開UIには直接出さず、本人向け通知に使う。 */
+  lastDrawnCard: Card | null;
 };
 
 export type PlayerSetup = {

@@ -1,4 +1,4 @@
-import type { Card, GameState } from "@/game/types";
+import type { Card, GameState, TurnOrderPreference } from "@/game/types";
 
 export type OnlineRoomStatus = "waiting" | "playing" | "finished";
 
@@ -14,6 +14,7 @@ export type OnlineRoom = {
   hostUid: string;
   status: OnlineRoomStatus;
   maxPlayers: 2 | 3 | 4;
+  turnOrderPreference?: TurnOrderPreference;
   createdAt?: unknown;
   updatedAt?: unknown;
 };

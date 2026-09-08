@@ -14,6 +14,7 @@ import {
   subscribeRoomPlayers,
 } from "@/online/room";
 import type { OnlineRoom, OnlineRoomPlayer, OnlineSession } from "@/online/types";
+import type { TurnOrderPreference } from "@/game/types";
 
 const goldButtonProps = {
   bg: "linear-gradient(180deg, #392A16, #171008)",
@@ -31,6 +32,7 @@ export default function OnlineBattle({ onExit }: { onExit: () => void }) {
   const [name, setName] = useState("あなた");
   const [code, setCode] = useState("");
   const [maxPlayers, setMaxPlayers] = useState<2 | 3 | 4>(2);
+  const [turnOrderPreference, setTurnOrderPreference] = useState<TurnOrderPreference>("random");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -131,6 +133,34 @@ export default function OnlineBattle({ onExit }: { onExit: () => void }) {
               </HStack>
             </Box>
           )}
+          {mode === "create" && (
+            <Box>
+              <Text mb="2" color="#B89758" fontSize="md" letterSpacing=".16em">TURN ORDER</Text>
+              <HStack gap="2">
+                {[
+                  { value: "first" as const, label: "先攻" },
+                  { value: "last" as const, label: "後攻" },
+                  { value: "random" as const, label: "ランダム" },
+                ].map((option) => (
+                  <Button
+                    key={option.value}
+                    flex="1"
+                    size="lg"
+                    {...(turnOrderPreference === option.value ? goldButtonProps : {})}
+                    variant={turnOrderPreference === option.value ? undefined : "outline"}
+                    borderColor="rgba(215,181,109,.34)"
+                    color="#F3E3B9"
+                    onClick={() => setTurnOrderPreference(option.value)}
+                  >
+                    {option.label}
+                  </Button>
+                ))}
+              </HStack>
+              <Text mt="2" color="#8F8370" fontSize="sm" lineHeight="1.7">
+                部屋を作ったプレイヤーを基準に、先攻＝最初、後攻＝最後、ランダム＝全員の順番を抽選します。
+              </Text>
+            </Box>
+          )}
           {mode === "join" && (
             <Box>
               <Text mb="2" color="#B89758" fontSize="md" letterSpacing=".16em">ROOM CODE</Text>
@@ -140,7 +170,7 @@ export default function OnlineBattle({ onExit }: { onExit: () => void }) {
           <Button {...goldButtonProps} size="lg" disabled={busy || (mode === "join" && code.length !== 6)} onClick={async () => {
             setBusy(true); setError("");
             try {
-              const next = mode === "create" ? await createOnlineRoom(name, maxPlayers) : await joinOnlineRoom(code, name);
+              const next = mode === "create" ? await createOnlineRoom(name, maxPlayers, turnOrderPreference) : await joinOnlineRoom(code, name);
               setSession(next);
             } catch (e) { setError(e instanceof Error ? e.message : "オンライン対戦を開始できませんでした。"); }
             finally { setBusy(false); }

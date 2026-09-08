@@ -330,12 +330,38 @@ export default function OnlineGameScreen({
             <Text mt="3" color="#C7B99E">対象にする場のカードを選択してください。</Text>
           )}
           {mode === "revive" && (
-            <VStack mt="4" align="stretch">
-              <Text color="#C7B99E">墓場から同じ数字のカードを選択：</Text>
+            <VStack
+              mt="4"
+              align="stretch"
+              p="4"
+              gap="3"
+              bg="rgba(0,0,0,.34)"
+              border="1px solid rgba(215,181,109,.32)"
+              borderRadius="8px"
+            >
+              <Text color="#FFF0C8" fontSize={{ base: "md", md: "lg" }} fontWeight="700">
+                墓場から同じ数字のカードを選択してください
+              </Text>
               {reviveTargets.length === 0 ? (
-                <Text color="#827663">復活できるカードがありません。</Text>
+                <Text color="#C6B99F" fontSize="md">復活できるカードがありません。</Text>
               ) : reviveTargets.map((card) => (
-                <Button key={card.id} variant="outline" borderColor="rgba(215,181,109,.30)" color="#E2D2B3" onClick={() => send("revive", { cardId: selected.id, targetCardId: card.id })}>
+                <Button
+                  key={card.id}
+                  variant="outline"
+                  h="auto"
+                  minH="48px"
+                  py="3"
+                  px="4"
+                  justifyContent="flex-start"
+                  borderColor="rgba(215,181,109,.52)"
+                  bg="rgba(28,22,14,.88)"
+                  color="#FFF2D0"
+                  fontSize={{ base: "md", md: "lg" }}
+                  fontWeight="700"
+                  textShadow="0 1px 2px rgba(0,0,0,.9)"
+                  _hover={{ bg: "rgba(215,181,109,.16)", borderColor: "#D7B56D", color: "#FFF7E6" }}
+                  onClick={() => send("revive", { cardId: selected.id, targetCardId: card.id })}
+                >
                   {MAGIC_NAMES[card.magic]} {card.number}
                 </Button>
               ))}

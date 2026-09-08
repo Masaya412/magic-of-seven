@@ -192,13 +192,11 @@ export default function GameScreen({
     const next = annotateNewEffectOwner(game, rawNext);
     const actorId = next.lastActionActorId;
 
-    // モラトリアムで山札が1枚減った場合、使用者本人にだけ引いたカードを確認させる。
-    if (actorId && next.deck.length === game.deck.length - 1) {
-      const beforePlayer = game.players.find((p) => p.id === actorId);
-      const afterPlayer = next.players.find((p) => p.id === actorId);
-      const beforeIds = new Set(beforePlayer?.hand.map((c) => c.id) ?? []);
-      const drawn = afterPlayer?.hand.find((c) => !beforeIds.has(c.id));
-      if (drawn && beforePlayer?.kind === "human") setDrawnCardNotice(drawn);
+    // モラトリアムで引いたカードは、墓場から復活させたモラトリアムを後で使った場合も
+    // engineが明示的にlastDrawnCardへ記録するため、使用者本人に確実に表示できる。
+    if (actorId && next.lastDrawnCard) {
+      const actor = next.players.find((p) => p.id === actorId);
+      if (actor?.kind === "human") setDrawnCardNotice(next.lastDrawnCard);
     }
 
     setGame(next);
@@ -497,13 +495,18 @@ export default function GameScreen({
             <VStack
               align="stretch"
               mt="4"
+              p="4"
+              gap="3"
+              bg="rgba(0,0,0,.34)"
+              border="1px solid rgba(215,181,109,.32)"
+              borderRadius="8px"
             >
-              <Text>
-                墓場から同じ数字のカードを選択:
+              <Text color="#FFF0C8" fontSize={{ base: "md", md: "lg" }} fontWeight="700">
+                墓場から同じ数字のカードを選択してください
               </Text>
 
               {reviveTargets.length === 0 ? (
-                <Text color="#8E877A">
+                <Text color="#C6B99F" fontSize="md">
                   復活できるカードがありません。
                 </Text>
               ) : (
@@ -511,6 +514,18 @@ export default function GameScreen({
                   <Button
                     key={c.id}
                     variant="outline"
+                    h="auto"
+                    minH="48px"
+                    py="3"
+                    px="4"
+                    justifyContent="flex-start"
+                    borderColor="rgba(215,181,109,.52)"
+                    bg="rgba(28,22,14,.88)"
+                    color="#FFF2D0"
+                    fontSize={{ base: "md", md: "lg" }}
+                    fontWeight="700"
+                    textShadow="0 1px 2px rgba(0,0,0,.9)"
+                    _hover={{ bg: "rgba(215,181,109,.16)", borderColor: "#D7B56D", color: "#FFF7E6" }}
                     onClick={() => {
                       commitHumanAction(
                         useRevive(
