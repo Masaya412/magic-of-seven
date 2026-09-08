@@ -57,44 +57,6 @@ function bestOpponentStack(state: GameState, playerId: string): FieldStack | und
     .sort((a, b) => visibleThreat(b) - visibleThreat(a))[0];
 }
 
-function draftValue(card: Card, level: number, drafted: Card[] = []): number {
-  const magicBonus: Record<Card["magic"], number> = {
-    destroy: 2.8,
-    guard: 1.4,
-    double: 3.1,
-    betray: 2.5,
-    moratorium: 0.8,
-    revive: 1.1,
-    truth: 0.5,
-  };
-
-  let value = card.number + magicBonus[card.magic];
-
-  if (level >= 11) {
-    const highPointCards = drafted.filter((c) => c.number >= 5).length;
-    const sameNumber = drafted.filter((c) => c.number === card.number).length;
-    const sameMagic = drafted.filter((c) => c.magic === card.magic).length;
-
-    // 超高難易度では、自分のドラフト済みカードとの相性まで見る。
-    if (card.magic === "double") value += highPointCards * 0.65;
-    if (card.magic === "guard") value += highPointCards * 0.35;
-    if (card.magic === "revive" && sameNumber > 0) value += 1.2 + sameNumber * 0.25;
-    if (card.magic === "destroy" || card.magic === "betray") value += 0.45;
-    if (card.magic === "truth") value += 0.25;
-    value -= sameMagic * 0.18;
-    value += card.number * (level === 13 ? 0.20 : level === 12 ? 0.14 : 0.08);
-  }
-
-  const noise =
-    level <= 10
-      ? Math.random() * ((10 - level) * 1.45 + 0.05)
-      : level === 11
-        ? Math.random() * 0.18
-        : level === 12
-          ? Math.random() * 0.06
-          : 0;
-  return value + noise;
-}
 
 export function cpuDraftPick(state: GameState): GameState {
   if (state.phase !== "draft") return state;
@@ -147,132 +109,454 @@ function takeMistakeTurn(state: GameState, cpu: Player): GameState {
 
 type EliteAction = {
   score: number;
+  label: string;
   run: () => GameState;
 };
 
 function cardRecoveryValue(card: Card): number {
   const bonus: Record<Card["magic"], number> = {
-    destroy: 2.8,
-    guard: 1.3,
-    double: 3.2,
-    betray: 2.7,
-    moratorium: 0.7,
-    revive: 1.0,
-    truth: 0.8,
+    destroy: 3.8,
+    guard: 2.0,
+    double: 4.5,
+    betray: 4.1,
+    moratorium: 1.8,
+    revive: 2.4,
+    truth: 1.5,
   };
   return card.number + bonus[card.magic];
+}
+
+function knownPlayerScore(player: Player, cpuId: string): number {
+  return player.field.reduce((sum, stack) => sum + knownStackValue(stack, cpuId), 0);
+}
+
+function publicPlayerScore(player: Player): number {
+  return player.field.reduce((sum, stack) => sum + visibleStackValue(stack), 0);
+}
+
+function playerThreat(state: GameState, player: Player, cpuId: string): number {
+  const field = player.id === cpuId ? knownPlayerScore(player, cpuId) : publicPlayerScore(player);
+  const hidden = player.field.reduce((sum, stack) => sum + unknownEffectCount(stack, cpuId), 0);
+  // 手札枚数は公開情報として「まだ逆転手段を持っている度合い」にだけ使う。
+  return field + hidden * 0.9 + player.hand.length * 0.22;
+}
+
+function strongestOpponent(state: GameState, cpu: Player): Player | undefined {
+  return state.players
+    .filter((p) => p.id !== cpu.id)
+    .sort((a, b) => playerThreat(state, b, cpu.id) - playerThreat(state, a, cpu.id))[0];
+}
+
+function ownLeadMargin(state: GameState, cpu: Player): number {
+  const own = knownPlayerScore(cpu, cpu.id);
+  const bestEnemy = Math.max(
+    0,
+    ...state.players
+      .filter((p) => p.id !== cpu.id)
+      .map((p) => publicPlayerScore(p))
+  );
+  return own - bestEnemy;
+}
+
+function futureHandValue(cpu: Player, cardUsed: Card): number {
+  return cpu.hand
+    .filter((c) => c.id !== cardUsed.id)
+    .reduce((sum, c) => {
+      const utility = c.magic === "double" || c.magic === "betray" || c.magic === "destroy" ? 0.55 : 0.28;
+      return sum + c.number * 0.10 + utility;
+    }, 0);
+}
+
+
+function maxVisibleOpponentStackValue(state: GameState, cpuId: string): number {
+  return Math.max(
+    0,
+    ...state.players
+      .filter((p) => p.id !== cpuId)
+      .flatMap((p) => p.field)
+      .map((stack) => Math.max(0, visibleStackValue(stack)))
+  );
+}
+
+function tacticalCardValue(state: GameState, cpu: Player, card: Card, level: number): number {
+  const ownPositive = Math.max(0, ...cpu.field.map((s) => Math.max(0, knownStackValue(s, cpu.id))));
+  const ownNegative = Math.max(0, ...cpu.field.map((s) => Math.max(0, -knownStackValue(s, cpu.id))));
+  const enemyPositive = maxVisibleOpponentStackValue(state, cpu.id);
+  const enemyThreat = Math.max(0, ...state.players
+    .filter((p) => p.id !== cpu.id)
+    .flatMap((p) => p.field)
+    .map((s) => visibleThreat(s)));
+  const hiddenEnemy = state.players
+    .filter((p) => p.id !== cpu.id)
+    .flatMap((p) => p.field)
+    .reduce((sum, s) => sum + unknownEffectCount(s, cpu.id), 0);
+  const sameNumberGrave = state.graveyard
+    .filter((c) => c.number === card.number && c.id !== card.id)
+    .sort((a, b) => cardRecoveryValue(b) - cardRecoveryValue(a))[0];
+
+  switch (card.magic) {
+    case "double":
+      return ownPositive * (0.72 + (level - 10) * 0.08);
+    case "betray":
+      // 相手への攻撃だけでなく、自分の負のスタックを2枚目の裏切りで反転する価値も見る。
+      return Math.max(enemyPositive * 1.05, ownNegative * 1.35);
+    case "destroy":
+      return enemyThreat * 0.78;
+    case "guard":
+      return ownPositive * 0.34;
+    case "truth":
+      return hiddenEnemy * 0.72;
+    case "revive":
+      return sameNumberGrave ? cardRecoveryValue(sameNumberGrave) * 0.95 : 0;
+    case "moratorium":
+      // 1枚使って1枚引くので、通常の手より手札を1枚多く維持できる。高難易度ほどこの手数差を重視。
+      return state.deck.length > 0
+        ? 2.8 + cpu.hand.length * 0.42 + (level - 10) * 0.85
+        : 0;
+  }
+}
+
+function handTempoBonus(cpu: Player, level: number): number {
+  // 手札が多いほど選択肢と残り手数が増える。Lv13ではかなり重く評価する。
+  const weight = level === 13 ? 1.55 : level === 12 ? 1.10 : 0.72;
+  return cpu.hand.length * weight;
+}
+
+function hasSecondBetray(cpu: Player, excludingCardId: string): boolean {
+  return cpu.hand.some((c) => c.id !== excludingCardId && c.magic === "betray");
+}
+
+function proactiveSelfBetrayValue(
+  state: GameState,
+  cpu: Player,
+  card: Card,
+  stack: FieldStack,
+  level: number
+): number {
+  if (level < 12) return Number.NEGATIVE_INFINITY;
+  if (!hasSecondBetray(cpu, card.id)) return Number.NEGATIVE_INFINITY;
+  if (cpu.hand.length < 4) return Number.NEGATIVE_INFINITY;
+  if (unknownEffectCount(stack, cpu.id) > 0) return Number.NEGATIVE_INFINITY;
+
+  const value = knownStackValue(stack, cpu.id);
+  if (value <= 0 || value > 4) return Number.NEGATIVE_INFINITY;
+
+  // 一時的に自分の低得点スタックを負にして伏せ札をブラフ化し、
+  // 後続の裏切りで再反転できる余裕がある時だけ候補にする。
+  // 常用すると弱くなるため、リード中・手札に余裕がある時に限定して小さめに評価。
+  const lead = ownLeadMargin(state, cpu);
+  const leadBonus = lead >= 4 ? 1.5 : lead >= 0 ? 0.65 : -1.25;
+  const levelBonus = level === 13 ? 1.35 : 0.45;
+  return 1.3 + (5 - value) * 0.42 + leadBonus + levelBonus;
+}
+
+function draftValue(card: Card, level: number, drafted: Card[] = []): number {
+  const magicBonus: Record<Card["magic"], number> = {
+    destroy: 3.5,
+    guard: 2.0,
+    double: 4.2,
+    betray: 3.9,
+    moratorium: 1.5,
+    revive: 2.2,
+    truth: 1.2,
+  };
+
+  let value = card.number * 1.12 + magicBonus[card.magic];
+
+  if (level >= 11) {
+    const highPointCards = drafted.filter((c) => c.number >= 5).length;
+    const sameNumber = drafted.filter((c) => c.number === card.number).length;
+    const sameMagic = drafted.filter((c) => c.magic === card.magic).length;
+    const doubles = drafted.filter((c) => c.magic === "double").length;
+    const guards = drafted.filter((c) => c.magic === "guard").length;
+    const revives = drafted.filter((c) => c.magic === "revive").length;
+    const attacks = drafted.filter((c) => c.magic === "destroy" || c.magic === "betray").length;
+
+    if (card.magic === "double") value += highPointCards * 0.95 + Math.max(0, 2 - doubles) * 0.35;
+    if (card.magic === "guard") value += highPointCards * 0.52 + Math.max(0, 2 - guards) * 0.22;
+    if (card.magic === "revive" && sameNumber > 0) value += 1.8 + sameNumber * 0.50;
+    if (card.magic === "revive") value += drafted.some((c) => c.number === card.number && c.magic !== "revive") ? 0.75 : 0;
+    if (card.magic === "destroy" || card.magic === "betray") value += Math.max(0, 3 - attacks) * 0.30;
+    if (card.magic === "truth") value += drafted.some((c) => c.magic === "destroy" || c.magic === "betray") ? 0.30 : 0;
+    if (card.magic === "moratorium" && card.number <= 3) value += 0.45;
+
+    // 同じ魔法への寄り過ぎは抑えるが、強カードの重複は許容する。
+    value -= sameMagic * (card.magic === "double" || card.magic === "betray" ? 0.08 : 0.22);
+
+    // Lv12/13ほど高数字を確実に確保する。
+    value += card.number * (level === 13 ? 0.34 : level === 12 ? 0.24 : 0.15);
+  }
+
+  const noise = level === 11 ? Math.random() * 0.10 : level === 12 ? Math.random() * 0.025 : 0;
+  return value + noise;
 }
 
 function eliteTakeTurn(state: GameState, cpu: Player, level: number): GameState {
   const actions: EliteAction[] = [];
   const allStacks = state.players.flatMap((p) => p.field);
-  const levelBonus = level - 10; // 11→1, 12→2, 13→3
-  const uncertaintyPenalty = level === 11 ? 0.35 : level === 12 ? 0.18 : 0.08;
-  const pointWeight = level === 13 ? 1.18 : level === 12 ? 1.14 : 1.10;
+  const leader = strongestOpponent(state, cpu);
+  const leadMargin = ownLeadMargin(state, cpu);
+  const levelBonus = level - 10;
+  const handAfter = Math.max(0, cpu.hand.length - 1);
+  const endgame = handAfter <= 2;
+  const finalTurn = handAfter === 0;
 
-  // 常に「そのままポイント化」を候補に残す。
+  // Lv13ほど「今の1手の点差」を重視し、Lv11は少し将来価値を残す。
+  const immediateWeight = level === 13 ? 1.42 : level === 12 ? 1.30 : 1.18;
+  const futureWeight = level === 13 ? 0.15 : level === 12 ? 0.24 : 0.34;
+  const uncertaintyPenalty = level === 13 ? 0.10 : level === 12 ? 0.16 : 0.24;
+
   for (const card of cpu.hand) {
+    // 素点化。終盤、特に最後の1枚では高数字を確実に点へ変える価値を上げる。
+    const tacticalValue = tacticalCardValue(state, cpu, card, level);
+    const strategyWeight = level === 13 ? 0.92 : level === 12 ? 0.68 : 0.42;
+    const pointScore =
+      card.number * immediateWeight +
+      (endgame ? card.number * 0.20 : 0) +
+      (finalTurn ? card.number * 0.36 : 0) +
+      futureHandValue(cpu, card) * futureWeight -
+      (!finalTurn ? tacticalValue * strategyWeight : tacticalValue * 0.22);
     actions.push({
-      score: card.number * pointWeight,
+      score: pointScore,
+      label: `point:${card.id}`,
       run: () => placeAsPoint(state, cpu.id, card.id),
     });
   }
 
   for (const card of cpu.hand) {
-    const opportunityCost = card.number * (level === 13 ? 0.52 : level === 12 ? 0.48 : 0.44);
+    const opportunityCost = card.number * (finalTurn ? 1.00 : endgame ? 0.78 : 0.58);
+    const preservedFuture = futureHandValue(cpu, card) * futureWeight;
 
-    if (card.magic === "double" || card.magic === "betray") {
-      for (const stack of allStacks) {
-        const ownerIsCpu = stack.ownerId === cpu.id;
+    if (card.magic === "double") {
+      for (const stack of cpu.field) {
         const before = knownStackValue(stack, cpu.id);
-        let after = before;
-        if (card.magic === "double") after *= 2;
-        if (card.magic === "betray") after *= -1;
-        const perspectiveDelta = ownerIsCpu ? after - before : -(after - before);
         const unknowns = unknownEffectCount(stack, cpu.id);
+        // 負の場を倍化しない。高得点の自分の場ほど優先。
+        if (before <= 0) continue;
+        const rawGain = before;
+        const protectSynergy = stack.effects.some(
+          (e) => (e.isFaceUp || e.placedByPlayerId === cpu.id) && e.card.magic === "guard"
+        ) ? 0.65 : 0;
         const score =
-          perspectiveDelta * (1.05 + levelBonus * 0.08) -
+          rawGain * (1.25 + levelBonus * 0.10) +
+          protectSynergy -
           opportunityCost -
-          unknowns * uncertaintyPenalty;
+          unknowns * uncertaintyPenalty +
+          preservedFuture;
         actions.push({
           score,
+          label: `double:${card.id}:${stack.id}`,
           run: () => stackEffect(state, cpu.id, card.id, stack.id),
         });
+      }
+    }
+
+    if (card.magic === "betray") {
+      // 高難易度では自分の場への裏切りも候補にする。
+      // すでに自分の裏切りで負になっている場なら、2枚目で正へ戻すのは大きな点差改善になる。
+      for (const stack of cpu.field) {
+        const before = knownStackValue(stack, cpu.id);
+        const hidden = unknownEffectCount(stack, cpu.id);
+        if (before < 0) {
+          const swing = Math.abs(before) * 2;
+          actions.push({
+            score:
+              swing * (1.28 + levelBonus * 0.10) -
+              opportunityCost * 0.48 -
+              hidden * uncertaintyPenalty +
+              preservedFuture +
+              handTempoBonus(cpu, level) * 0.12,
+            label: `betray-self-flip:${card.id}:${stack.id}`,
+            run: () => stackEffect(state, cpu.id, card.id, stack.id),
+          });
+        } else {
+          const bluff = proactiveSelfBetrayValue(state, cpu, card, stack, level);
+          if (Number.isFinite(bluff)) {
+            actions.push({
+              score:
+                bluff - opportunityCost * 0.35 + preservedFuture +
+                handTempoBonus(cpu, level) * 0.08,
+              label: `betray-self-trap:${card.id}:${stack.id}`,
+              run: () => stackEffect(state, cpu.id, card.id, stack.id),
+            });
+          }
+        }
+      }
+
+      for (const player of state.players.filter((p) => p.id !== cpu.id)) {
+        const leaderBonus = player.id === leader?.id ? 1.35 : 0;
+        for (const stack of player.field) {
+          const before = visibleStackValue(stack);
+          const hidden = unknownEffectCount(stack, cpu.id);
+          // 公開値がプラスの場に裏切りを置くと、概ね 2*before の点差改善。
+          const swing = before > 0 ? before * 2 : before * 0.25;
+          const score =
+            swing * (1.13 + levelBonus * 0.07) +
+            leaderBonus +
+            hidden * 0.18 -
+            opportunityCost -
+            hidden * uncertaintyPenalty +
+            preservedFuture;
+          actions.push({
+            score,
+            label: `betray:${card.id}:${stack.id}`,
+            run: () => stackEffect(state, cpu.id, card.id, stack.id),
+          });
+        }
       }
     }
 
     if (card.magic === "guard") {
       for (const stack of cpu.field) {
         const value = knownStackValue(stack, cpu.id);
-        const unknowns = unknownEffectCount(stack, cpu.id);
-        const protectionValue = Math.max(0, value) * (0.42 + levelBonus * 0.035) + 1.2;
+        if (value <= 0) continue;
+        const hidden = unknownEffectCount(stack, cpu.id);
+        const hasKnownGuard = stack.effects.some(
+          (e) => (e.isFaceUp || e.placedByPlayerId === cpu.id) && e.card.magic === "guard"
+        );
+        const protection =
+          value * (0.48 + levelBonus * 0.055) +
+          (endgame ? value * 0.15 : 0) +
+          (leadMargin > 0 ? 0.70 : 0) -
+          (hasKnownGuard ? 0.85 : 0);
         actions.push({
-          score: protectionValue - opportunityCost - unknowns * uncertaintyPenalty * 0.4,
+          score: protection - opportunityCost - hidden * uncertaintyPenalty * 0.35 + preservedFuture,
+          label: `guard:${card.id}:${stack.id}`,
           run: () => stackEffect(state, cpu.id, card.id, stack.id),
         });
       }
     }
 
     if (card.magic === "destroy") {
-      for (const stack of allStacks) {
-        const ownerIsCpu = stack.ownerId === cpu.id;
-        const known = knownStackValue(stack, cpu.id);
-        const unknowns = unknownEffectCount(stack, cpu.id);
-        let swing = ownerIsCpu ? Math.max(0, -known) : Math.max(0, known);
-        swing += ownerIsCpu ? 0 : unknowns * (0.55 + levelBonus * 0.10);
-        // 守護が公開済み、または自分が置いて記憶している場合は破壊の期待値を抑える。
-        const knownTop = [...stack.effects]
-          .reverse()
-          .find((e) => e.isFaceUp || e.placedByPlayerId === cpu.id);
-        if (knownTop?.card.magic === "guard") swing *= 0.45;
-        actions.push({
-          score: swing * (1.18 + levelBonus * 0.05) - opportunityCost,
-          run: () => useDestroy(state, cpu.id, card.id, stack.id),
-        });
+      for (const player of state.players) {
+        for (const stack of player.field) {
+          const ownerIsCpu = player.id === cpu.id;
+          const known = ownerIsCpu ? knownStackValue(stack, cpu.id) : visibleStackValue(stack);
+          const unknowns = unknownEffectCount(stack, cpu.id);
+          const knownTop = [...stack.effects]
+            .reverse()
+            .find((e) => e.isFaceUp || e.placedByPlayerId === cpu.id);
+
+          let swing: number;
+          if (ownerIsCpu) {
+            // 自分の負得点スタックだけは破壊候補にする。
+            swing = known < 0 ? Math.abs(known) * 1.55 : -Math.max(1, known) * 0.65;
+          } else {
+            swing = Math.max(0, known) * 1.18 + unknowns * (0.55 + levelBonus * 0.12);
+            if (player.id === leader?.id) swing += 1.25;
+          }
+
+          // 守護が見えている/自分が置いたと記憶している場合、破壊は1枚で止まりやすい。
+          if (knownTop?.card.magic === "guard") swing *= 0.42;
+          if (stack.effects.length === 0) swing *= 0.48;
+
+          actions.push({
+            score: swing * (1.08 + levelBonus * 0.06) - opportunityCost + preservedFuture,
+            label: `destroy:${card.id}:${stack.id}`,
+            run: () => useDestroy(state, cpu.id, card.id, stack.id),
+          });
+        }
       }
     }
 
     if (card.magic === "truth") {
-      for (const stack of allStacks) {
-        const hidden = unknownEffectCount(stack, cpu.id);
-        if (hidden === 0) continue;
-        const ownerIsCpu = stack.ownerId === cpu.id;
-        const informationValue = hidden * (ownerIsCpu ? 0.9 : 1.7 + levelBonus * 0.18);
-        actions.push({
-          score: informationValue - opportunityCost * 0.65,
-          run: () => useTruth(state, cpu.id, card.id, stack.id),
-        });
+      for (const player of state.players) {
+        for (const stack of player.field) {
+          const hidden = unknownEffectCount(stack, cpu.id);
+          if (hidden === 0) continue;
+          const ownerIsCpu = player.id === cpu.id;
+          const baseThreat = Math.max(1, visibleStackValue(stack));
+          const leaderBonus = player.id === leader?.id ? 0.8 : 0;
+          const informationValue = hidden * (ownerIsCpu ? 0.75 : 1.45 + levelBonus * 0.22);
+          const score =
+            informationValue +
+            Math.min(2.0, baseThreat * 0.16) +
+            leaderBonus -
+            opportunityCost * 0.72 +
+            preservedFuture;
+          actions.push({
+            score,
+            label: `truth:${card.id}:${stack.id}`,
+            run: () => useTruth(state, cpu.id, card.id, stack.id),
+          });
+        }
       }
     }
 
     if (card.magic === "revive") {
-      for (const target of state.graveyard.filter(
-        (c) => c.number === card.number && c.id !== card.id
-      )) {
-        const futureValue = cardRecoveryValue(target) * (0.78 + levelBonus * 0.04);
+      const candidates = state.graveyard.filter((c) => c.number === card.number && c.id !== card.id);
+      for (const target of candidates) {
+        let recovered = cardRecoveryValue(target);
+        // 復活で再利用すると特に強い札を明示的に高評価。
+        if (target.magic === "double" || target.magic === "betray" || target.magic === "destroy") recovered += 1.3;
+        if (target.magic === "moratorium" && state.deck.length > 0) recovered += 0.8;
+        const followUp = tacticalCardValue(state, cpu, target, level);
+        const tempoBonus = level === 13 ? 3.8 : level === 12 ? 2.7 : 1.7;
+        const score =
+          recovered * (0.88 + levelBonus * 0.07) +
+          followUp * (level === 13 ? 0.72 : level === 12 ? 0.52 : 0.32) -
+          opportunityCost * 0.48 +
+          tempoBonus +
+          (endgame ? 1.05 : 0.35) +
+          preservedFuture;
         actions.push({
-          score: futureValue - opportunityCost * 0.72,
+          score,
+          label: `revive:${card.id}:${target.id}`,
           run: () => useRevive(state, cpu.id, card.id, target.id),
         });
       }
     }
 
     if (card.magic === "moratorium" && state.deck.length > 0) {
-      // 山札1枚の平均数字は概ね4。終盤ほど手札を1枚延命する価値も少し加える。
-      const expectedDraw = 4.0 + (state.deck.length / 49) * 0.35;
-      const tempo = cpu.hand.length <= 2 ? 1.0 : 0.35;
+      // 山札の中身は見ない。既知のカードだけを除外して平均数字を推定する。
+      const knownCards = [
+        ...state.graveyard,
+        ...state.players.flatMap((p) => [
+          ...p.field.map((s) => s.baseCard),
+          ...p.field.flatMap((s) => s.effects.filter((e) => e.isFaceUp || e.placedByPlayerId === cpu.id).map((e) => e.card)),
+        ]),
+        ...cpu.hand,
+      ];
+      const totalNumbers = 7 * (1 + 2 + 3 + 4 + 5 + 6 + 7);
+      const knownSum = knownCards.reduce((sum, c) => sum + c.number, 0);
+      const unknownCardCount = Math.max(1, 49 - knownCards.length);
+      const expectedDraw = Math.max(1, Math.min(7, (totalNumbers - knownSum) / unknownCardCount));
+      const handPreservation =
+        (level === 13 ? 4.2 : level === 12 ? 3.0 : 1.9) +
+        cpu.hand.length * (level === 13 ? 0.42 : level === 12 ? 0.28 : 0.16);
+      const tempo = endgame ? 2.25 : cpu.hand.length <= 4 ? 1.25 : 0.75;
       actions.push({
-        score: expectedDraw + tempo + levelBonus * 0.10 - opportunityCost * 0.70,
+        score:
+          expectedDraw * (0.72 + levelBonus * 0.05) +
+          tempo +
+          handPreservation -
+          opportunityCost * 0.38 +
+          preservedFuture,
+        label: `moratorium:${card.id}`,
         run: () => useMoratorium(state, cpu.id, card.id),
       });
     }
   }
 
-  // Lv11/12はごく小さな揺らぎを残す。Lv13は同一情報なら常に最善評価を選ぶ。
-  const noiseScale = level === 11 ? 0.42 : level === 12 ? 0.14 : 0;
-  const ranked = actions
-    .map((action) => ({ ...action, adjusted: action.score + Math.random() * noiseScale }))
-    .sort((a, b) => b.adjusted - a.adjusted);
+  // リード中は守りを、負けている時は攻撃を少し強める。
+  const adjusted = actions.map((action) => {
+    let situational = 0;
+    if (leadMargin >= 5 && (action.label.startsWith("guard:") || action.label.startsWith("point:"))) situational += 0.75;
+    if (leadMargin <= -5 && (action.label.startsWith("betray:") || action.label.startsWith("destroy:"))) situational += 1.0;
+    if (level >= 12 && cpu.hand.length >= 5 && action.label.startsWith("moratorium:")) situational += level === 13 ? 2.0 : 1.1;
+    if (level === 13 && cpu.hand.length >= 4 && action.label.startsWith("revive:")) situational += 1.15;
+    if (leadMargin >= 4 && action.label.startsWith("betray-self-trap:")) situational += level === 13 ? 1.0 : 0.35;
+    if (action.label.startsWith("betray-self-flip:")) situational += level === 13 ? 1.6 : level === 12 ? 1.05 : 0.55;
+    if (finalTurn && action.label.startsWith("truth:")) situational -= 1.4;
+    if (finalTurn && action.label.startsWith("moratorium:")) situational += 1.4;
+    return { ...action, adjusted: action.score + situational };
+  });
+
+  // Lv11のみごく僅かな揺らぎ。Lv12/13は評価値どおりに選ぶ。
+  const noiseScale = level === 11 ? 0.10 : 0;
+  const ranked = adjusted
+    .map((action) => ({ ...action, finalScore: action.adjusted + Math.random() * noiseScale }))
+    .sort((a, b) => b.finalScore - a.finalScore);
 
   return ranked[0]?.run() ?? placeAsPoint(state, cpu.id, cpu.hand[0].id);
 }
