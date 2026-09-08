@@ -9,10 +9,12 @@ export default function FieldStackView({
   stack,
   onClick,
   selectable = false,
+  onPreviewCard,
 }: {
   stack: FieldStack;
   onClick?: () => void;
   selectable?: boolean;
+  onPreviewCard?: (card: FieldStack["baseCard"]) => void;
 }) {
   return (
     <Box
@@ -37,7 +39,15 @@ export default function FieldStackView({
       transition="all .15s ease"
     >
       <VStack align="stretch" gap="2">
-        <Box display="flex" justifyContent="center">
+        <Box
+          display="flex"
+          justifyContent="center"
+          onClick={(e) => {
+            if (selectable || !onPreviewCard) return;
+            e.stopPropagation();
+            onPreviewCard(stack.baseCard);
+          }}
+        >
           <MagicCard card={stack.baseCard} size="small" />
         </Box>
 
@@ -51,6 +61,12 @@ export default function FieldStackView({
               <HStack
                 key={`${effect.card.id}-${i}`}
                 justify="space-between"
+                cursor={!selectable && effect.isFaceUp && onPreviewCard ? "zoom-in" : selectable ? "pointer" : "default"}
+                onClick={(e) => {
+                  if (selectable || !effect.isFaceUp || !onPreviewCard) return;
+                  e.stopPropagation();
+                  onPreviewCard(effect.card);
+                }}
                 bg="rgba(0,0,0,.40)"
                 border="1px solid rgba(215,181,109,.14)"
                 px="2"

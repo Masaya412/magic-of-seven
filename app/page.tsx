@@ -35,6 +35,7 @@ export default function Home() {
   const [mode, setMode] = useState<GameMode>("cpu");
   const [count, setCount] = useState(2);
   const [onlineOpen, setOnlineOpen] = useState(false);
+  const [cpuLevels, setCpuLevels] = useState([5, 5, 5]);
   const [names, setNames] = useState([
     "あなた",
     "プレイヤー2",
@@ -65,6 +66,7 @@ export default function Home() {
         ...Array.from({ length: count - 1 }, (_, i) => ({
           name: `CPU ${i + 1}`,
           kind: "cpu" as const,
+          cpuLevel: cpuLevels[i],
         })),
       ];
     } else {
@@ -218,6 +220,53 @@ export default function Home() {
                         {Array.from({ length: count - 1 }, (_, i) => `CPU ${i + 1}`).join(" / ")}
                       </Text>
                     </HStack>
+                    <VStack align="stretch" gap="4" pt="2">
+                      <Text fontSize="md" color="#B89758" letterSpacing="0.22em">
+                        CPU DIFFICULTY
+                      </Text>
+                      {Array.from({ length: count - 1 }, (_, cpuIndex) => (
+                        <Box
+                          key={cpuIndex}
+                          p="3"
+                          border="1px solid rgba(215,181,109,.24)"
+                          borderRadius="6px"
+                          bg="rgba(0,0,0,.22)"
+                        >
+                          <HStack justify="space-between" mb="2" flexWrap="wrap">
+                            <Text color="#E8D7B2">CPU {cpuIndex + 1}</Text>
+                            <Text color="#F3D48A" fontWeight="600">Lv.{cpuLevels[cpuIndex]}</Text>
+                          </HStack>
+                          <SimpleGrid columns={{ base: 5, md: 10 }} gap="2">
+                            {Array.from({ length: 10 }, (_, levelIndex) => {
+                              const level = levelIndex + 1;
+                              const active = cpuLevels[cpuIndex] === level;
+                              return (
+                                <Button
+                                  key={level}
+                                  size="xs"
+                                  minW="0"
+                                  px="1"
+                                  border="1px solid"
+                                  borderColor={active ? "#D7B56D" : "rgba(215,181,109,.24)"}
+                                  bg={active ? "rgba(215,181,109,.18)" : "rgba(0,0,0,.22)"}
+                                  color={active ? "#F3D48A" : "#B6AA97"}
+                                  onClick={() => {
+                                    const next = [...cpuLevels];
+                                    next[cpuIndex] = level;
+                                    setCpuLevels(next);
+                                  }}
+                                >
+                                  {level}
+                                </Button>
+                              );
+                            })}
+                          </SimpleGrid>
+                        </Box>
+                      ))}
+                      <Text color="#8F8370" fontSize="sm">
+                        Lv.1が最も易しく、Lv.10が最も強い設定です。CPUごとに個別設定できます。
+                      </Text>
+                    </VStack>
                   </VStack>
                 ) : (
                   <VStack gap="3">

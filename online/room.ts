@@ -47,6 +47,7 @@ type StoredHostGameState = {
   gameJson: string;
   playerUids: Record<string, string>;
   pendingDraftPicks?: Record<string, string>;
+  privateDrawNotices?: Record<string, Card | null>;
 };
 
 type StoredPublicGameSnapshot = Omit<PublicGameSnapshot, "resultGameState"> & {
@@ -59,6 +60,7 @@ function encodeHostGameState(state: HostGameState): StoredHostGameState {
     gameJson: JSON.stringify(state.game),
     playerUids: state.playerUids,
     pendingDraftPicks: state.pendingDraftPicks,
+    privateDrawNotices: state.privateDrawNotices,
   };
 }
 
@@ -68,6 +70,7 @@ function decodeHostGameState(value: StoredHostGameState): HostGameState {
     game: JSON.parse(value.gameJson) as GameState,
     playerUids: value.playerUids,
     pendingDraftPicks: value.pendingDraftPicks ?? {},
+    privateDrawNotices: value.privateDrawNotices ?? {},
   };
 }
 
@@ -277,7 +280,7 @@ export async function startOnlineGame(roomCode: string) {
   players.forEach((p, index) => {
     playerUids[`p${index + 1}`] = p.uid;
   });
-  const hostState: HostGameState = { revision: 0, game, playerUids, pendingDraftPicks: {} };
+  const hostState: HostGameState = { revision: 0, game, playerUids, pendingDraftPicks: {}, privateDrawNotices: {} };
 
   await runTransaction(db, async (tx) => {
     tx.set(doc(db, "rooms", roomCode, "system", "state"), encodeHostGameState(hostState));
@@ -383,15 +386,27 @@ async function processAction(roomCode: string, actionId: string) {
           action.payload.cardId
         );
       } else {
+        const nextGame = applyValidatedAction(
+          hostState.game,
+          actorPlayerId,
+          action.type,
+          action.payload
+        );
+
+        const privateDrawNotices: Record<string, Card | null> = {};
+        if (action.type === "moratorium" && nextGame.deck.length === hostState.game.deck.length - 1) {
+          const beforePlayer = hostState.game.players.find((p) => p.id === actorPlayerId);
+          const afterPlayer = nextGame.players.find((p) => p.id === actorPlayerId);
+          const beforeIds = new Set(beforePlayer?.hand.map((c) => c.id) ?? []);
+          const drawn = afterPlayer?.hand.find((c) => !beforeIds.has(c.id)) ?? null;
+          if (drawn) privateDrawNotices[actorPlayerId] = drawn;
+        }
+
         nextHostState = {
           ...hostState,
           revision: hostState.revision + 1,
-          game: applyValidatedAction(
-            hostState.game,
-            actorPlayerId,
-            action.type,
-            action.payload
-          ),
+          game: nextGame,
+          privateDrawNotices,
         };
       }
     } catch (error) {
@@ -451,6 +466,7 @@ function applySimultaneousDraftPick(
       ...state,
       revision: state.revision + 1,
       pendingDraftPicks,
+      privateDrawNotices: {},
     };
   }
 
@@ -476,6 +492,7 @@ function applySimultaneousDraftPick(
     revision: state.revision + 1,
     game: nextGame,
     pendingDraftPicks: {},
+    privateDrawNotices: {},
   };
 }
 
@@ -511,7 +528,13 @@ function applyValidatedAction(
   if (type === "stackEffect") {
     if (!["guard", "double", "betray"].includes(card.magic)) throw new Error("重ねて使えないカードです。");
     if (!payload.targetStackId) throw new Error("対象がありません。");
-    return stackEffect(game, playerId, card.id, payload.targetStackId);
+    const next = stackEffect(game, playerId, card.id, payload.targetStackId);
+    const target = next.players.flatMap((p) => p.field).find((s) => s.id === payload.targetStackId);
+    const added = target?.effects.find((effect) => effect.card.id === card.id);
+    if (added) {
+      (added as typeof added & { placedByPlayerId?: string }).placedByPlayerId = playerId;
+    }
+    return next;
   }
   if (type === "destroy") {
     if (card.magic !== "destroy") throw new Error("破壊の魔法ではありません。");
@@ -603,6 +626,7 @@ function createPrivateSnapshot(
     draftPack: state.game.draftPacks[index] ?? [],
     draftSelectionsCount: state.game.draftSelections[index]?.length ?? 0,
     draftSubmitted: Boolean(state.pendingDraftPicks[playerId]),
+    drawnCardNotice: state.privateDrawNotices[playerId] ?? null,
   };
 }
 

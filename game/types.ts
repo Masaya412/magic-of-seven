@@ -16,6 +16,10 @@ export type Card = {
 export type StackedCard = {
   card: Card;
   isFaceUp: boolean;
+  /** この効果カードを場に伏せたプレイヤー */
+  placedByPlayerId?: string;
+  /** 真実の魔法によって公開されたカードか。新しく積むカードは必ずfalse */
+  revealedByTruth?: boolean;
 };
 
 export type FieldStack = {
@@ -26,17 +30,17 @@ export type FieldStack = {
 };
 
 export type PlayerKind = "human" | "cpu";
-
 export type Player = {
   id: string;
   name: string;
   kind: PlayerKind;
+  /** CPUのみ使用。1（弱い）〜10（強い）。 */
+  cpuLevel?: number;
   hand: Card[];
   field: FieldStack[];
 };
 
 export type Phase = "setup" | "draft" | "playing" | "result";
-
 export type GameState = {
   phase: Phase;
   players: Player[];
@@ -52,12 +56,11 @@ export type GameState = {
   lastAction: string;
   lastActionCard: Card | null;
   lastActionActorId: string | null;
-
-  // CPUが伏せて重ねたカードなど、行動確認時にも正体を見せないカードか
   lastActionCardHidden: boolean;
 };
 
 export type PlayerSetup = {
   name: string;
   kind: PlayerKind;
+  cpuLevel?: number;
 };

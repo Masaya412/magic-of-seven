@@ -1,0 +1,93 @@
+# 7つの魔法 - Installation Requirements
+#
+# IMPORTANT:
+# This is a Next.js / TypeScript project, not a Python project.
+# Do NOT run: pip install -r requirements.txt
+# JavaScript packages are installed from package.json with pnpm or npm.
+#
+# ============================================================
+# 1. Required software
+# ============================================================
+# Node.js 20 or later recommended
+# https://nodejs.org/
+#
+# Package manager (recommended)
+# pnpm 9 or later
+# Install with:
+#   npm install -g pnpm
+#
+# Git (required only for GitHub / GitHub Pages deployment)
+# https://git-scm.com/
+#
+# ============================================================
+# 2. Application dependencies
+# ============================================================
+# These are already defined in package.json.
+# Install all of them with:
+#   pnpm install
+#
+# Runtime dependencies:
+# @chakra-ui/react ^3.27.0
+# @emotion/react ^11.14.0
+# firebase ^12.2.1
+# next 15.5.3
+# react 19.1.0
+# react-dom 19.1.0
+#
+# Development dependencies:
+# @types/node ^22.15.0
+# @types/react ^19.1.0
+# @types/react-dom ^19.1.0
+# typescript ^5.8.0
+#
+# ============================================================
+# 3. Firebase services required for online battle
+# ============================================================
+# Firebase project
+# Firebase Authentication
+#   - Anonymous sign-in must be enabled
+# Cloud Firestore
+#   - firestore.rules in this project must be published
+#
+# Firebase CLI is OPTIONAL.
+# It is only needed if you want to deploy Firestore rules from the terminal.
+# Install with:
+#   npm install -g firebase-tools
+#
+# ============================================================
+# 4. Firebase environment variables
+# ============================================================
+# Create .env.local in the project root and set:
+#
+# NEXT_PUBLIC_FIREBASE_API_KEY=
+# NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=
+# NEXT_PUBLIC_FIREBASE_PROJECT_ID=
+# NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=
+# NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=
+# NEXT_PUBLIC_FIREBASE_APP_ID=
+#
+# See .env.local.example for the template.
+#
+# ============================================================
+# 5. Local setup
+# ============================================================
+# From the project directory:
+#
+#   pnpm install
+#   pnpm dev
+#
+# Then open:
+#   http://localhost:3000
+#
+# If using npm instead of pnpm:
+#   npm install
+#   npm run dev
+#
+# ============================================================
+# 6. GitHub Pages deployment
+# ============================================================
+# GitHub account / repository
+# GitHub Actions
+# Repository Secrets containing the Firebase NEXT_PUBLIC_* values
+#
+# No Python installation is required for this application.

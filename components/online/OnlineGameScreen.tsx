@@ -15,6 +15,9 @@ import {
 import MagicCard from "@/components/MagicCard";
 import ResultRevealScreen from "@/components/ResultRevealScreen";
 import ActionOverlay from "@/components/ActionOverlay";
+import CardInspectOverlay from "@/components/CardInspectOverlay";
+import GraveyardOverlay from "@/components/GraveyardOverlay";
+import DrawnCardOverlay from "@/components/DrawnCardOverlay";
 import { MAGIC_NAMES } from "@/game/cards";
 import type { Card } from "@/game/types";
 import {
@@ -51,6 +54,9 @@ export default function OnlineGameScreen({
   const [error, setError] = useState("");
   const [awaitingOpponentContinue, setAwaitingOpponentContinue] = useState(false);
   const [actionPreviews, setActionPreviews] = useState<OnlineActionPreview[]>([]);
+  const [previewCard, setPreviewCard] = useState<Card | null>(null);
+  const [graveOpen, setGraveOpen] = useState(false);
+  const [drawnCardNotice, setDrawnCardNotice] = useState<Card | null>(null);
   const previousPublicRef = useRef<{ revision: number; phase: PublicGameSnapshot["phase"] } | null>(null);
 
   useEffect(() => subscribePublicGame(session.roomCode, setPublicGame), [session.roomCode]);
@@ -60,6 +66,12 @@ export default function OnlineGameScreen({
     if (!session.isHost) return;
     return startHostActionProcessor(session.roomCode);
   }, [session.isHost, session.roomCode]);
+
+  useEffect(() => {
+    if (privateGame?.drawnCardNotice) {
+      setDrawnCardNotice(privateGame.drawnCardNotice);
+    }
+  }, [privateGame?.revision]);
 
   useEffect(() => {
     setSubmitting(false);
@@ -243,7 +255,15 @@ export default function OnlineGameScreen({
 
       <HStack justify="space-between" color="#AFA594" fontSize="md" wrap="wrap">
         <Text>山札 {publicGame.deckCount}枚</Text>
-        <Text>墓場 {publicGame.graveyard.length}枚</Text>
+        <Button
+          size="sm"
+          variant="outline"
+          borderColor="rgba(215,181,109,.28)"
+          color="#E3D1AF"
+          onClick={() => setGraveOpen(true)}
+        >
+          墓場 {publicGame.graveyard.length}枚を見る
+        </Button>
       </HStack>
 
       {publicGame.lastAction && !awaitingOpponentContinue && (
@@ -270,6 +290,7 @@ export default function OnlineGameScreen({
                     stack={stack}
                     selectable={canAct && mode !== "none" && mode !== "revive"}
                     onClick={() => targetStack(stack.id)}
+                    onPreviewCard={setPreviewCard}
                   />
                 ))
               )}
@@ -334,6 +355,22 @@ export default function OnlineGameScreen({
         />
       )}
 
+      {graveOpen && (
+        <GraveyardOverlay
+          cards={publicGame.graveyard}
+          onClose={() => setGraveOpen(false)}
+          onCardClick={setPreviewCard}
+        />
+      )}
+
+      {previewCard && (
+        <CardInspectOverlay card={previewCard} onClose={() => setPreviewCard(null)} />
+      )}
+
+      {drawnCardNotice && (
+        <DrawnCardOverlay card={drawnCardNotice} onContinue={() => setDrawnCardNotice(null)} />
+      )}
+
       {error && <Text color="#E6A3A3">{error}</Text>}
       {submitting && <Text color="#BDAE94" fontSize="md">操作を同期しています…</Text>}
     </OnlineShell>
@@ -371,7 +408,17 @@ function OpponentActionTracker({ playerName, phase }: { playerName: string; phas
   );
 }
 
-function OnlineFieldStack({ stack, selectable, onClick }: { stack: PublicFieldStack; selectable: boolean; onClick: () => void }) {
+function OnlineFieldStack({
+  stack,
+  selectable,
+  onClick,
+  onPreviewCard,
+}: {
+  stack: PublicFieldStack;
+  selectable: boolean;
+  onClick: () => void;
+  onPreviewCard: (card: Card) => void;
+}) {
   return (
     <Box
       p="2"
@@ -382,16 +429,34 @@ function OnlineFieldStack({ stack, selectable, onClick }: { stack: PublicFieldSt
       onClick={selectable ? onClick : undefined}
     >
       <VStack gap="2">
-        <MagicCard card={stack.baseCard} size="small" />
+        <Box
+          onClick={(e) => {
+            if (selectable) return;
+            e.stopPropagation();
+            onPreviewCard(stack.baseCard);
+          }}
+          cursor={selectable ? "pointer" : "zoom-in"}
+        >
+          <MagicCard card={stack.baseCard} size="small" />
+        </Box>
         {stack.effects.length > 0 && (
           <HStack gap="1" wrap="wrap" justify="center">
             {stack.effects.map((effect) => (
-              <MagicCard
+              <Box
                 key={effect.id}
-                card={effect.card ?? { ...HIDDEN_PLACEHOLDER, id: effect.id }}
-                hidden={!effect.card}
-                size="small"
-              />
+                cursor={selectable ? "pointer" : effect.card ? "zoom-in" : "default"}
+                onClick={(e) => {
+                  if (selectable || !effect.card) return;
+                  e.stopPropagation();
+                  onPreviewCard(effect.card);
+                }}
+              >
+                <MagicCard
+                  card={effect.card ?? { ...HIDDEN_PLACEHOLDER, id: effect.id }}
+                  hidden={!effect.card}
+                  size="small"
+                />
+              </Box>
             ))}
           </HStack>
         )}

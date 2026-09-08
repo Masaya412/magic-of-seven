@@ -73,6 +73,7 @@ export type PrivateGameSnapshot = {
   draftPack: Card[];
   draftSelectionsCount: number;
   draftSubmitted: boolean;
+  drawnCardNotice: Card | null;
 };
 
 export type HostGameState = {
@@ -80,6 +81,7 @@ export type HostGameState = {
   game: GameState;
   playerUids: Record<string, string>;
   pendingDraftPicks: Record<string, string>;
+  privateDrawNotices: Record<string, Card | null>;
 };
 
 export type OnlineActionPreviewPhase =

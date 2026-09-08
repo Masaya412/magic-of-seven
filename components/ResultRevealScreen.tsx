@@ -209,7 +209,7 @@ export default function ResultRevealScreen({
               </Heading>
               {player.kind === "cpu" && (
                 <Text fontSize="md" color="#A99772" letterSpacing="0.2em">
-                  ◇ CPU PLAYER
+                  ◇ CPU Lv.{player.cpuLevel ?? 5}
                 </Text>
               )}
             </VStack>
@@ -260,6 +260,7 @@ export default function ResultRevealScreen({
           {stack ? (
             <StackReveal
               stack={stack}
+              players={game.players}
               frame={frame}
               scoreSteps={scoreSteps}
               shownStackScore={shownStackScore}
@@ -284,11 +285,13 @@ export default function ResultRevealScreen({
 
 function StackReveal({
   stack,
+  players,
   frame,
   scoreSteps,
   shownStackScore,
 }: {
   stack: FieldStack;
+  players: Player[];
   frame: RevealFrame;
   scoreSteps: StackScoreStep[];
   shownStackScore: number;
@@ -320,6 +323,10 @@ function StackReveal({
           const active = frame.activeEffectId === effect.card.id;
           const isFlipping = frame.stage === "revealEffect" && active;
 
+          const placer = effect.placedByPlayerId
+            ? players.find((p) => p.id === effect.placedByPlayerId)?.name
+            : undefined;
+
           return (
             <ResultEffectCard
               key={`${effect.card.id}-${index}`}
@@ -327,6 +334,7 @@ function StackReveal({
               revealed={revealed}
               active={active}
               isFlipping={isFlipping}
+              placerName={placer}
             />
           );
         })}
@@ -367,11 +375,13 @@ function ResultEffectCard({
   revealed,
   active,
   isFlipping,
+  placerName,
 }: {
   card: Card;
   revealed: boolean;
   active: boolean;
   isFlipping: boolean;
+  placerName?: string;
 }) {
   return (
     <VStack gap="1">
@@ -405,6 +415,11 @@ function ResultEffectCard({
             : `${MAGIC_NAMES[card.magic]} ${card.number}`
           : "未公開"}
       </Text>
+      {revealed && (
+        <Text fontSize="9px" color="#8F8370" textAlign="center">
+          伏せた人：{placerName ?? "記録なし"}
+        </Text>
+      )}
     </VStack>
   );
 }
@@ -568,7 +583,7 @@ function FinalRanking({
                       {player.name}
                     </Text>
                     {player.kind === "cpu" && (
-                      <Text fontSize="12px" color="#8F8067" letterSpacing="0.17em">CPU PLAYER</Text>
+                      <Text fontSize="12px" color="#8F8067" letterSpacing="0.17em">CPU Lv.{player.cpuLevel ?? 5}</Text>
                     )}
                   </VStack>
                 </HStack>

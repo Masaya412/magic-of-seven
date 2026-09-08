@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import type React from "react";
 import {
   Box,
   Button,
@@ -16,6 +17,9 @@ import MagicCard from "@/components/MagicCard";
 import FieldStackView from "@/components/FieldStackView";
 import ResultRevealScreen from "@/components/ResultRevealScreen";
 import ActionOverlay from "@/components/ActionOverlay";
+import CardInspectOverlay from "@/components/CardInspectOverlay";
+import GraveyardOverlay from "@/components/GraveyardOverlay";
+import DrawnCardOverlay from "@/components/DrawnCardOverlay";
 import { MAGIC_NAMES } from "@/game/cards";
 import {
   cpuDraftPick,
@@ -50,6 +54,9 @@ export default function GameScreen({
     useState(false);
   const [awaitingLocalContinue, setAwaitingLocalContinue] =
     useState(false);
+  const [previewCard, setPreviewCard] = useState<Card | null>(null);
+  const [graveOpen, setGraveOpen] = useState(false);
+  const [drawnCardNotice, setDrawnCardNotice] = useState<Card | null>(null);
 
   useEffect(() => {
     if (game.phase !== "playing") {
@@ -62,7 +69,7 @@ export default function GameScreen({
 
     if (player?.kind === "cpu" && !awaitingCpuContinue) {
       const timer = window.setTimeout(() => {
-        const next = cpuTakeTurn(game);
+        const next = annotateNewEffectOwner(game, cpuTakeTurn(game));
         setGame(next);
 
         // CPUの行動結果を人間が確認するまで次のCPU処理へ進めない
@@ -181,7 +188,19 @@ export default function GameScreen({
     lastActor?.kind === "human";
   const showActionPanel = showCpuActionPanel || showLocalActionPanel;
 
-  const commitHumanAction = (next: GameState) => {
+  const commitHumanAction = (rawNext: GameState) => {
+    const next = annotateNewEffectOwner(game, rawNext);
+    const actorId = next.lastActionActorId;
+
+    // モラトリアムで山札が1枚減った場合、使用者本人にだけ引いたカードを確認させる。
+    if (actorId && next.deck.length === game.deck.length - 1) {
+      const beforePlayer = game.players.find((p) => p.id === actorId);
+      const afterPlayer = next.players.find((p) => p.id === actorId);
+      const beforeIds = new Set(beforePlayer?.hand.map((c) => c.id) ?? []);
+      const drawn = afterPlayer?.hand.find((c) => !beforeIds.has(c.id));
+      if (drawn && beforePlayer?.kind === "human") setDrawnCardNotice(drawn);
+    }
+
     setGame(next);
     if (isLocalBattle && next.phase === "playing" && next.lastActionActorId) {
       setAwaitingLocalContinue(true);
@@ -288,7 +307,7 @@ export default function GameScreen({
         <HStack gap="5">
           <VStack gap="0"><Text fontSize="9px" letterSpacing="0.22em" color="#8F7952">DECK</Text><Text color="#F0DFC0" fontSize="lg">{game.deck.length}</Text></VStack>
           <Box w="1px" h="30px" bg="rgba(215,181,109,.3)" />
-          <VStack gap="0"><Text fontSize="9px" letterSpacing="0.22em" color="#8F7952">GRAVE</Text><Text color="#F0DFC0" fontSize="lg">{game.graveyard.length}</Text></VStack>
+          <VStack gap="0"><Text fontSize="9px" letterSpacing="0.22em" color="#8F7952">GRAVE</Text><Button size="xs" variant="ghost" color="#F0DFC0" fontSize="lg" px="2" onClick={() => setGraveOpen(true)}>{game.graveyard.length}枚を見る</Button></VStack>
         </HStack>
       </HStack>
 
@@ -301,7 +320,7 @@ export default function GameScreen({
       >
         <Heading size="lg">
           {current.name} のターン{" "}
-          {isCpuTurn ? " ◇ CPU" : ""}
+          {isCpuTurn ? ` ◇ CPU Lv.${current.cpuLevel ?? 5}` : ""}
         </Heading>
 
         <Text>
@@ -344,7 +363,7 @@ export default function GameScreen({
             <HStack justify="space-between">
               <Heading size="md">
                 {p.name}
-                {p.kind === "cpu" ? " ◇ CPU" : ""}
+                {p.kind === "cpu" ? ` ◇ CPU Lv.${p.cpuLevel ?? 5}` : ""}
               </Heading>
               <Text color="#BDB4A3">
                 ポイント非公開
@@ -373,6 +392,7 @@ export default function GameScreen({
                     onClick={() =>
                       selectTarget(s.id)
                     }
+                    onPreviewCard={setPreviewCard}
                   />
                 ))
               ) : (
@@ -542,8 +562,43 @@ export default function GameScreen({
           }}
         />
       )}
+
+      {graveOpen && (
+        <GraveyardOverlay
+          cards={game.graveyard}
+          onClose={() => setGraveOpen(false)}
+          onCardClick={setPreviewCard}
+        />
+      )}
+
+      {previewCard && (
+        <CardInspectOverlay card={previewCard} onClose={() => setPreviewCard(null)} />
+      )}
+
+      {drawnCardNotice && (
+        <DrawnCardOverlay card={drawnCardNotice} onContinue={() => setDrawnCardNotice(null)} />
+      )}
     </Shell>
   );
+}
+
+function annotateNewEffectOwner(before: GameState, after: GameState): GameState {
+  const actorId = after.lastActionActorId;
+  if (!actorId) return after;
+
+  const next = structuredClone(after);
+  for (const player of next.players) {
+    for (const stack of player.field) {
+      const beforeStack = before.players.flatMap((p) => p.field).find((s) => s.id === stack.id);
+      const beforeIds = new Set(beforeStack?.effects.map((e) => e.card.id) ?? []);
+      for (const effect of stack.effects) {
+        if (!beforeIds.has(effect.card.id)) {
+          (effect as typeof effect & { placedByPlayerId?: string }).placedByPlayerId = actorId;
+        }
+      }
+    }
+  }
+  return next;
 }
 
 function Shell({
