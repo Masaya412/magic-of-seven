@@ -73,6 +73,8 @@ export type PrivateGameSnapshot = {
   hand: Card[];
   draftPack: Card[];
   draftSelectionsCount: number;
+  draftSelections: Card[];
+  draftSelectedCard: Card | null;
   draftSubmitted: boolean;
   drawnCardNotice: Card | null;
 };

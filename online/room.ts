@@ -733,13 +733,22 @@ function createPrivateSnapshot(
 ): PrivateGameSnapshot {
   const index = state.game.players.findIndex((p) => p.id === playerId);
   const player = state.game.players[index];
+  const draftPack = state.game.draftPacks[index] ?? [];
+  const pendingDraftCardId = state.pendingDraftPicks[playerId];
+  const draftSelectedCard = pendingDraftCardId
+    ? draftPack.find((card) => card.id === pendingDraftCardId) ?? null
+    : null;
+  const draftSelections = state.game.draftSelections[index] ?? [];
+
   return {
     revision: state.revision,
     playerId,
     hand: player?.hand ?? [],
-    draftPack: state.game.draftPacks[index] ?? [],
-    draftSelectionsCount: state.game.draftSelections[index]?.length ?? 0,
-    draftSubmitted: Boolean(state.pendingDraftPicks[playerId]),
+    draftPack,
+    draftSelectionsCount: draftSelections.length,
+    draftSelections,
+    draftSelectedCard,
+    draftSubmitted: Boolean(pendingDraftCardId),
     drawnCardNotice: state.privateDrawNotices[playerId] ?? null,
   };
 }

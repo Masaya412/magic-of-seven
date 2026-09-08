@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import { Box, Button, Heading, Text, VStack } from "@chakra-ui/react";
 import MagicCard from "@/components/MagicCard";
 import type { Card } from "@/game/types";
@@ -13,6 +14,9 @@ export default function ActionOverlay({
   hidden = false,
   label = "PLAYER ACTION",
   onContinue,
+  autoContinueMs,
+  showContinueButton = true,
+  continueLabel = "次へ",
 }: {
   actorName: string;
   action: string;
@@ -20,7 +24,16 @@ export default function ActionOverlay({
   hidden?: boolean;
   label?: string;
   onContinue: () => void;
+  autoContinueMs?: number;
+  showContinueButton?: boolean;
+  continueLabel?: string;
 }) {
+  useEffect(() => {
+    if (!autoContinueMs || autoContinueMs <= 0) return;
+    const timer = window.setTimeout(onContinue, autoContinueMs);
+    return () => window.clearTimeout(timer);
+  }, [autoContinueMs, onContinue]);
+
   return (
     <Box
       position="fixed"
@@ -90,21 +103,23 @@ export default function ActionOverlay({
             </Text>
           )}
 
-          <Button
-            size="lg"
-            w="full"
-            bg="linear-gradient(180deg, #392A16, #171008)"
-            color="#F3E3B9"
-            border="1px solid #9E7A3C"
-            borderRadius="6px"
-            _hover={{
-              borderColor: "#D7B56D",
-              boxShadow: "0 0 18px rgba(215,181,109,.22)",
-            }}
-            onClick={onContinue}
-          >
-            次へ
-          </Button>
+          {showContinueButton && (
+            <Button
+              size="lg"
+              w="full"
+              bg="linear-gradient(180deg, #392A16, #171008)"
+              color="#F3E3B9"
+              border="1px solid #9E7A3C"
+              borderRadius="6px"
+              _hover={{
+                borderColor: "#D7B56D",
+                boxShadow: "0 0 18px rgba(215,181,109,.22)",
+              }}
+              onClick={onContinue}
+            >
+              {continueLabel}
+            </Button>
+          )}
         </VStack>
       </Box>
     </Box>

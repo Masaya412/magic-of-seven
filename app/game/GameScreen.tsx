@@ -57,6 +57,7 @@ export default function GameScreen({
   const [previewCard, setPreviewCard] = useState<Card | null>(null);
   const [graveOpen, setGraveOpen] = useState(false);
   const [drawnCardNotice, setDrawnCardNotice] = useState<Card | null>(null);
+  const [resultRevealReady, setResultRevealReady] = useState(false);
 
   useEffect(() => {
     if (game.phase !== "playing") {
@@ -79,6 +80,16 @@ export default function GameScreen({
       return () => window.clearTimeout(timer);
     }
   }, [awaitingCpuContinue, game, setGame]);
+
+  useEffect(() => {
+    if (game.phase !== "result") {
+      setResultRevealReady(false);
+      return;
+    }
+
+    const timer = window.setTimeout(() => setResultRevealReady(true), 1700);
+    return () => window.clearTimeout(timer);
+  }, [game.phase, game.lastAction]);
 
   useEffect(() => {
     if (game.phase === "draft") {
@@ -148,6 +159,17 @@ export default function GameScreen({
           </HStack>
         )}
 
+        {!isCpu && game.draftSelections[p].length > 0 && (
+          <VStack gap="3">
+            <Text color="#D7C9B1" fontWeight="600">{player.name}が選んだカード</Text>
+            <HStack wrap="wrap" justify="center" gap="2">
+              {game.draftSelections[p].map((card) => (
+                <MagicCard key={card.id} card={card} size="small" />
+              ))}
+            </HStack>
+          </VStack>
+        )}
+
         <Text textAlign="center" color="#9F927C" fontSize="md" letterSpacing="0.08em">
           SELECTED {game.draftSelections[p].length} / 7
         </Text>
@@ -156,6 +178,32 @@ export default function GameScreen({
   }
 
   if (game.phase === "result") {
+    const finalActor = game.lastActionActorId
+      ? game.players.find((player) => player.id === game.lastActionActorId)
+      : null;
+    const finalHidden =
+      game.lastActionCardHidden ||
+      (Boolean(game.lastActionCard) &&
+        ["guard", "double", "betray"].includes(game.lastActionCard!.magic) &&
+        /重ね|伏せ/.test(game.lastAction));
+
+    if (!resultRevealReady && finalActor && game.lastAction) {
+      return (
+        <Shell>
+          <ActionOverlay
+            actorName={finalActor.name}
+            action={game.lastAction}
+            card={game.lastActionCard}
+            hidden={finalHidden}
+            label="FINAL ACTION"
+            autoContinueMs={1700}
+            showContinueButton={false}
+            onContinue={() => setResultRevealReady(true)}
+          />
+        </Shell>
+      );
+    }
+
     return (
       <Shell>
         <ResultRevealScreen game={game} onRestart={onRestart} />

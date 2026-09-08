@@ -59,6 +59,7 @@ export default function OnlineGameScreen({
   const [drawnCardNotice, setDrawnCardNotice] = useState<Card | null>(null);
   const [syncSlow, setSyncSlow] = useState(false);
   const [syncError, setSyncError] = useState("");
+  const [resultRevealReady, setResultRevealReady] = useState(false);
   const previousPublicRef = useRef<{ revision: number; phase: PublicGameSnapshot["phase"] } | null>(null);
   const submitLockRef = useRef(false);
 
@@ -93,6 +94,18 @@ export default function OnlineGameScreen({
     const timer = window.setTimeout(() => setSyncSlow(true), 8000);
     return () => window.clearTimeout(timer);
   }, [publicGame, privateGame, session.roomCode]);
+
+  useEffect(() => {
+    if (publicGame?.phase !== "result") {
+      setResultRevealReady(false);
+      return;
+    }
+
+    // 最終手番の内容が見えないまま結果画面へ切り替わらないよう、
+    // 最後の行動を約1.7秒表示してから結果発表へ進む。
+    const timer = window.setTimeout(() => setResultRevealReady(true), 1700);
+    return () => window.clearTimeout(timer);
+  }, [publicGame?.phase, publicGame?.revision]);
 
   useEffect(() => {
     if (privateGame?.drawnCardNotice) {
@@ -195,6 +208,27 @@ export default function OnlineGameScreen({
   }
 
   if (publicGame.phase === "result" && publicGame.resultGameState) {
+    const finalActor = publicGame.lastActionActorId
+      ? publicGame.players.find((player) => player.id === publicGame.lastActionActorId)
+      : null;
+
+    if (!resultRevealReady && finalActor && publicGame.lastAction) {
+      return (
+        <OnlineShell>
+          <ActionOverlay
+            actorName={finalActor.name}
+            action={publicGame.lastAction}
+            card={publicGame.lastActionCard}
+            hidden={publicGame.lastActionCardHidden}
+            label="FINAL ACTION"
+            autoContinueMs={1700}
+            showContinueButton={false}
+            onContinue={() => setResultRevealReady(true)}
+          />
+        </OnlineShell>
+      );
+    }
+
     return (
       <OnlineShell>
         <ResultRevealScreen game={publicGame.resultGameState} onRestart={onLeave} />
@@ -206,6 +240,11 @@ export default function OnlineGameScreen({
     const hasSubmitted = privateGame.draftSubmitted;
     const playerCount = publicGame.players.length;
     const othersSelected = Math.max(0, publicGame.draftSelectedCount - (hasSubmitted ? 1 : 0));
+    const visibleDraftSelections = privateGame.draftSelectedCard
+      ? [...privateGame.draftSelections, privateGame.draftSelectedCard].filter(
+          (card, index, cards) => cards.findIndex((item) => item.id === card.id) === index
+        )
+      : privateGame.draftSelections;
 
     return (
       <OnlineShell>
@@ -247,7 +286,24 @@ export default function OnlineGameScreen({
                 他のプレイヤーがこのラウンドのカードを選ぶまでお待ちください。
                 全員の選択が完了すると自動で次へ進みます。
               </Text>
+              {privateGame.draftSelectedCard && (
+                <VStack mt="5" gap="3">
+                  <Text color="#F3E5BF" fontWeight="700">このラウンドであなたが選んだカード</Text>
+                  <MagicCard card={privateGame.draftSelectedCard} />
+                </VStack>
+              )}
             </Box>
+          )}
+
+          {visibleDraftSelections.length > 0 && (
+            <VStack w="full" gap="3">
+              <Text color="#D7C9B1" fontWeight="600">あなたが選んだカード</Text>
+              <HStack wrap="wrap" justify="center" gap="2">
+                {visibleDraftSelections.map((card) => (
+                  <MagicCard key={card.id} card={card} size="small" />
+                ))}
+              </HStack>
+            </VStack>
           )}
 
           <HStack color="#A99A82" fontSize="md" gap="5" wrap="wrap" justify="center">
