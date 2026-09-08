@@ -57,15 +57,42 @@ export default function OnlineGameScreen({
   const [previewCard, setPreviewCard] = useState<Card | null>(null);
   const [graveOpen, setGraveOpen] = useState(false);
   const [drawnCardNotice, setDrawnCardNotice] = useState<Card | null>(null);
+  const [syncSlow, setSyncSlow] = useState(false);
+  const [syncError, setSyncError] = useState("");
   const previousPublicRef = useRef<{ revision: number; phase: PublicGameSnapshot["phase"] } | null>(null);
+  const submitLockRef = useRef(false);
 
-  useEffect(() => subscribePublicGame(session.roomCode, setPublicGame), [session.roomCode]);
-  useEffect(() => subscribePrivateGame(session, setPrivateGame), [session]);
+  useEffect(() => {
+    setSyncError("");
+    return subscribePublicGame(
+      session.roomCode,
+      setPublicGame,
+      (e) => setSyncError(`公開対戦データを取得できませんでした: ${e.message}`)
+    );
+  }, [session.roomCode]);
+
+  useEffect(() => {
+    setSyncError("");
+    return subscribePrivateGame(
+      session,
+      setPrivateGame,
+      (e) => setSyncError(`自分の対戦データを取得できませんでした: ${e.message}`)
+    );
+  }, [session]);
   useEffect(() => subscribeActionPreviews(session.roomCode, setActionPreviews), [session.roomCode]);
   useEffect(() => {
     if (!session.isHost) return;
     return startHostActionProcessor(session.roomCode);
   }, [session.isHost, session.roomCode]);
+
+  useEffect(() => {
+    if (publicGame && privateGame) {
+      setSyncSlow(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setSyncSlow(true), 8000);
+    return () => window.clearTimeout(timer);
+  }, [publicGame, privateGame, session.roomCode]);
 
   useEffect(() => {
     if (privateGame?.drawnCardNotice) {
@@ -74,6 +101,7 @@ export default function OnlineGameScreen({
   }, [privateGame?.revision]);
 
   useEffect(() => {
+    submitLockRef.current = false;
     setSubmitting(false);
     setSelected(null);
     setMode("none");
@@ -115,13 +143,19 @@ export default function OnlineGameScreen({
   }, [publicGame?.currentTurn, publicGame?.phase, session, awaitingOpponentContinue]);
 
   const send = async (type: OnlineActionType, payload: { cardId: string; targetStackId?: string; targetCardId?: string }) => {
-    if (submitting) return;
+    if (submitting || submitLockRef.current) return;
+    submitLockRef.current = true;
     setSubmitting(true);
     setError("");
     try {
-      if (type !== "draftPick") await setOnlineActionPreview(session, "committing");
+      // プレビュー書き込みは表示用なので、行動送信の前に待たない。
+      // これだけでFirestoreへの余分な1往復をクリティカルパスから外せる。
+      if (type !== "draftPick") {
+        setOnlineActionPreview(session, "committing").catch(() => undefined);
+      }
       await submitOnlineAction(session, type, payload);
     } catch (e) {
+      submitLockRef.current = false;
       setSubmitting(false);
       setOnlineActionPreview(session, "idle").catch(() => undefined);
       setError(e instanceof Error ? e.message : "操作を送信できませんでした。");
@@ -129,7 +163,35 @@ export default function OnlineGameScreen({
   };
 
   if (!publicGame || !privateGame) {
-    return <OnlineShell><Text textAlign="center">対戦データを同期しています…</Text></OnlineShell>;
+    return (
+      <OnlineShell>
+        <VStack gap="4" py="8">
+          <Heading size="md" color="#F3E5BF">対戦データを同期しています…</Heading>
+          <Text textAlign="center" color="#BDAE94">公開データとあなた専用の対戦データを読み込んでいます。</Text>
+          {syncError && (
+            <Box w="full" maxW="680px" p="4" border="1px solid rgba(230,120,120,.40)" bg="rgba(80,20,20,.22)" borderRadius="8px">
+              <Text color="#F1B4B4" textAlign="center">{syncError}</Text>
+            </Box>
+          )}
+          {syncSlow && !syncError && (
+            <Text textAlign="center" color="#D9C8A8">8秒以上かかっています。通信状態またはFirestoreの権限設定を確認してください。</Text>
+          )}
+          {(syncSlow || syncError) && (
+            <HStack>
+              <Button
+                bg="linear-gradient(180deg, #392A16, #171008)"
+                color="#F3E3B9"
+                border="1px solid #9E7A3C"
+                onClick={() => window.location.reload()}
+              >
+                再試行
+              </Button>
+              <Button variant="outline" borderColor="rgba(215,181,109,.28)" color="#D8C7A8" onClick={onLeave}>退出</Button>
+            </HStack>
+          )}
+        </VStack>
+      </OnlineShell>
+    );
   }
 
   if (publicGame.phase === "result" && publicGame.resultGameState) {

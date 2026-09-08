@@ -7,10 +7,12 @@ import {
   getDoc,
   getDocs,
   onSnapshot,
+  query,
   runTransaction,
   serverTimestamp,
   setDoc,
   updateDoc,
+  where,
   type Transaction,
   type Unsubscribe,
 } from "firebase/firestore";
@@ -228,33 +230,43 @@ export function subscribeRoomPlayers(
 
 export function subscribePublicGame(
   roomCode: string,
-  callback: (snapshot: PublicGameSnapshot | null) => void
+  callback: (snapshot: PublicGameSnapshot | null) => void,
+  onError?: (error: Error) => void
 ): Unsubscribe {
   const { db } = requireFirebase();
-  return onSnapshot(doc(db, "rooms", roomCode, "system", "public"), (snap) => {
-    if (!snap.exists()) {
-      callback(null);
-      return;
-    }
-    const stored = snap.data() as StoredPublicGameSnapshot;
-    const { resultGameStateJson, ...publicData } = stored;
-    callback({
-      ...publicData,
-      resultGameState: resultGameStateJson
-        ? (JSON.parse(resultGameStateJson) as GameState)
-        : null,
-    });
-  });
+  return onSnapshot(
+    doc(db, "rooms", roomCode, "system", "public"),
+    (snap) => {
+      if (!snap.exists()) {
+        callback(null);
+        return;
+      }
+      const stored = snap.data() as StoredPublicGameSnapshot;
+      const { resultGameStateJson, ...publicData } = stored;
+      callback({
+        ...publicData,
+        resultGameState: resultGameStateJson
+          ? (JSON.parse(resultGameStateJson) as GameState)
+          : null,
+      });
+    },
+    (error) => onError?.(error)
+  );
 }
 
 export function subscribePrivateGame(
   session: OnlineSession,
-  callback: (snapshot: PrivateGameSnapshot | null) => void
+  callback: (snapshot: PrivateGameSnapshot | null) => void,
+  onError?: (error: Error) => void
 ): Unsubscribe {
   const { db } = requireFirebase();
-  return onSnapshot(doc(db, "rooms", session.roomCode, "private", session.uid), (snap) => {
-    callback(snap.exists() ? (snap.data() as PrivateGameSnapshot) : null);
-  });
+  return onSnapshot(
+    doc(db, "rooms", session.roomCode, "private", session.uid),
+    (snap) => {
+      callback(snap.exists() ? (snap.data() as PrivateGameSnapshot) : null);
+    },
+    (error) => onError?.(error)
+  );
 }
 
 export async function startOnlineGame(roomCode: string) {
@@ -290,7 +302,7 @@ export async function startOnlineGame(roomCode: string) {
 
   await runTransaction(db, async (tx) => {
     tx.set(doc(db, "rooms", roomCode, "system", "state"), encodeHostGameState(hostState));
-    writeViews(tx, roomCode, hostState, null);
+    writeViews(tx, roomCode, hostState, null, "all");
     tx.update(roomRef, { status: "playing", updatedAt: serverTimestamp() });
   });
 }
@@ -301,6 +313,14 @@ export async function submitOnlineAction(
   payload: OnlineActionPayload
 ) {
   const { db } = requireFirebase();
+
+  // ホスト自身の操作は actions コレクションを経由せず直接処理する。
+  // 「action作成 → ホストがsnapshot受信」の1往復を省けるため、体感速度が大きく改善する。
+  if (session.isHost) {
+    await processHostActionDirect(session.roomCode, session.uid, type, payload);
+    return;
+  }
+
   await addDoc(collection(db, "rooms", session.roomCode, "actions"), {
     actorUid: session.uid,
     type,
@@ -341,10 +361,22 @@ export function subscribeActionPreviews(
 export function startHostActionProcessor(roomCode: string): Unsubscribe {
   const { db } = requireFirebase();
   let chain = Promise.resolve();
+  const processing = new Set<string>();
 
-  return onSnapshot(collection(db, "rooms", roomCode, "actions"), (snap) => {
+  return onSnapshot(
+    query(
+      collection(db, "rooms", roomCode, "actions"),
+      where("processed", "==", false)
+    ),
+    { includeMetadataChanges: true },
+    (snap) => {
     const pending = snap.docs
-      .filter((d) => !(d.data() as OnlineAction).processed)
+      .filter((d) => {
+        const action = d.data() as OnlineAction;
+        // addDoc直後のローカル未確定スナップショットは処理しない。
+        // サーバーへ確定する前にTransactionを開始すると409 already-exists競合の原因になる。
+        return !d.metadata.hasPendingWrites && !action.processed && !processing.has(d.id);
+      })
       .sort((a, b) => {
         const at = (a.data().createdAt as { toMillis?: () => number } | undefined)?.toMillis?.() ?? 0;
         const bt = (b.data().createdAt as { toMillis?: () => number } | undefined)?.toMillis?.() ?? 0;
@@ -352,9 +384,58 @@ export function startHostActionProcessor(roomCode: string): Unsubscribe {
       });
 
     for (const actionDoc of pending) {
+      const actionId = actionDoc.id;
+      processing.add(actionId);
+
       chain = chain
-        .then(() => processAction(roomCode, actionDoc.id))
-        .catch((error) => console.error("online action error", error));
+        .then(() => processAction(roomCode, actionId))
+        .catch((error) => {
+          const code = (error as { code?: string } | null)?.code;
+          if (code === "already-exists" || code === "aborted") {
+            console.warn("online action transaction conflict", actionId, code);
+            return;
+          }
+          console.error("online action error", error);
+        })
+        .finally(() => {
+          processing.delete(actionId);
+        });
+    }
+  });
+}
+
+async function processHostActionDirect(
+  roomCode: string,
+  actorUid: string,
+  type: OnlineActionType,
+  payload: OnlineActionPayload
+) {
+  const { db } = requireFirebase();
+  const stateRef = doc(db, "rooms", roomCode, "system", "state");
+  const roomRef = doc(db, "rooms", roomCode);
+
+  await runTransaction(db, async (tx) => {
+    const stateSnap = await tx.get(stateRef);
+    if (!stateSnap.exists()) throw new Error("対戦状態が見つかりません。");
+
+    const hostState = decodeHostGameState(stateSnap.data() as StoredHostGameState);
+    const actorPlayerId = Object.entries(hostState.playerUids).find(
+      ([, uid]) => uid === actorUid
+    )?.[0];
+    if (!actorPlayerId) throw new Error("プレイヤー情報が見つかりません。");
+
+    const { nextHostState, privateTargets } = applyOnlineActionToHostState(
+      hostState,
+      actorPlayerId,
+      type,
+      payload
+    );
+
+    tx.set(stateRef, encodeHostGameState(nextHostState));
+    writeViews(tx, roomCode, nextHostState, type, privateTargets);
+
+    if (nextHostState.game.phase === "result") {
+      tx.update(roomRef, { status: "finished", updatedAt: serverTimestamp() });
     }
   });
 }
@@ -366,14 +447,13 @@ async function processAction(roomCode: string, actionId: string) {
   const roomRef = doc(db, "rooms", roomCode);
 
   await runTransaction(db, async (tx) => {
-    const [actionSnap, stateSnap] = await Promise.all([
-      tx.get(actionRef),
-      tx.get(stateRef),
-    ]);
-    if (!actionSnap.exists() || !stateSnap.exists()) return;
+    const actionSnap = await tx.get(actionRef);
+    if (!actionSnap.exists()) return;
     const action = actionSnap.data() as OnlineAction;
     if (action.processed) return;
 
+    const stateSnap = await tx.get(stateRef);
+    if (!stateSnap.exists()) return;
     const hostState = decodeHostGameState(stateSnap.data() as StoredHostGameState);
     const actorPlayerId = Object.entries(hostState.playerUids).find(
       ([, actorUid]) => actorUid === action.actorUid
@@ -384,35 +464,14 @@ async function processAction(roomCode: string, actionId: string) {
     }
 
     let nextHostState: HostGameState;
+    let privateTargets: "all" | string[];
     try {
-      if (action.type === "draftPick") {
-        nextHostState = applySimultaneousDraftPick(
-          hostState,
-          actorPlayerId,
-          action.payload.cardId
-        );
-      } else {
-        const nextGame = applyValidatedAction(
-          hostState.game,
-          actorPlayerId,
-          action.type,
-          action.payload
-        );
-
-        const privateDrawNotices: Record<string, Card | null> = {};
-        // 復活で墓場から戻したモラトリアムを後で使用した場合も、
-        // engine側のlastDrawnCardを本人のprivate viewだけへ通知する。
-        if (action.type === "moratorium" && nextGame.lastDrawnCard) {
-          privateDrawNotices[actorPlayerId] = nextGame.lastDrawnCard;
-        }
-
-        nextHostState = {
-          ...hostState,
-          revision: hostState.revision + 1,
-          game: nextGame,
-          privateDrawNotices,
-        };
-      }
+      ({ nextHostState, privateTargets } = applyOnlineActionToHostState(
+        hostState,
+        actorPlayerId,
+        action.type,
+        action.payload
+      ));
     } catch (error) {
       tx.update(actionRef, {
         processed: true,
@@ -423,17 +482,68 @@ async function processAction(roomCode: string, actionId: string) {
 
     const next = nextHostState.game;
     tx.set(stateRef, encodeHostGameState(nextHostState));
-    writeViews(tx, roomCode, nextHostState, action.type);
+    writeViews(tx, roomCode, nextHostState, action.type, privateTargets);
     tx.update(actionRef, { processed: true, processedAt: serverTimestamp() });
 
+    // 毎手番の room.updatedAt 更新は同期に不要なので省略する。
+    // 終局時だけroomメタデータを更新する。
     if (next.phase === "result") {
       tx.update(roomRef, { status: "finished", updatedAt: serverTimestamp() });
-    } else {
-      tx.update(roomRef, { updatedAt: serverTimestamp() });
     }
   });
 }
 
+
+function applyOnlineActionToHostState(
+  hostState: HostGameState,
+  actorPlayerId: string,
+  type: OnlineActionType,
+  payload: OnlineActionPayload
+): { nextHostState: HostGameState; privateTargets: "all" | string[] } {
+  if (type === "draftPick") {
+    const willAdvanceRound =
+      Object.keys(hostState.pendingDraftPicks).length + 1 >= hostState.game.players.length;
+    const nextHostState = applySimultaneousDraftPick(
+      hostState,
+      actorPlayerId,
+      payload.cardId
+    );
+    // 全員選択完了時は全員のdraftPackが入れ替わる。
+    // それ以外は選択した本人のprivateだけ更新すればよい。
+    return {
+      nextHostState,
+      privateTargets: willAdvanceRound ? "all" : [actorPlayerId],
+    };
+  }
+
+  const nextGame = applyValidatedAction(
+    hostState.game,
+    actorPlayerId,
+    type,
+    payload
+  );
+
+  const privateDrawNotices: Record<string, Card | null> = {};
+  if (type === "moratorium" && nextGame.lastDrawnCard) {
+    privateDrawNotices[actorPlayerId] = nextGame.lastDrawnCard;
+  }
+
+  const noticeOwnersToClear = Object.entries(hostState.privateDrawNotices)
+    .filter(([, card]) => Boolean(card))
+    .map(([playerId]) => playerId);
+
+  return {
+    nextHostState: {
+      ...hostState,
+      revision: hostState.revision + 1,
+      game: nextGame,
+      privateDrawNotices,
+    },
+    // 通常手番で手札が変わるのは行動した本人だけ。
+    // 直前のモラトリアム通知が別プレイヤーに残っている場合だけ、そのprivateもnullへ更新する。
+    privateTargets: Array.from(new Set([actorPlayerId, ...noticeOwnersToClear])),
+  };
+}
 
 function applySimultaneousDraftPick(
   state: HostGameState,
@@ -638,11 +748,20 @@ function writeViews(
   tx: Transaction,
   roomCode: string,
   state: HostGameState,
-  actionType: OnlineActionType | null
+  actionType: OnlineActionType | null,
+  privateTargets: "all" | string[]
 ) {
   const { db } = requireFirebase();
   tx.set(doc(db, "rooms", roomCode, "system", "public"), createPublicSnapshot(state, actionType));
-  for (const [playerId, uid] of Object.entries(state.playerUids)) {
+
+  const targetIds =
+    privateTargets === "all"
+      ? Object.keys(state.playerUids)
+      : privateTargets;
+
+  for (const playerId of targetIds) {
+    const uid = state.playerUids[playerId];
+    if (!uid) continue;
     tx.set(
       doc(db, "rooms", roomCode, "private", uid),
       createPrivateSnapshot(state, playerId)
