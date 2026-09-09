@@ -6,15 +6,22 @@ import { Box, Button, Heading, HStack, Input, Text, VStack } from "@chakra-ui/re
 import OnlineGameScreen from "./OnlineGameScreen";
 import { isFirebaseConfigured } from "@/online/firebase";
 import {
+  cleanupStaleWaitingPlayers,
   createOnlineRoom,
   joinOnlineRoom,
+  leaveOnlineRoom,
   normalizeRoomCode,
+  resumeOnlineSession,
   startOnlineGame,
+  subscribePublicGame,
   subscribeRoom,
   subscribeRoomPlayers,
+  touchWaitingRoomPresence,
 } from "@/online/room";
 import type { OnlineRoom, OnlineRoomPlayer, OnlineSession } from "@/online/types";
 import type { TurnOrderPreference } from "@/game/types";
+
+const ONLINE_SESSION_STORAGE_KEY = "seven-magic-online-session-v1";
 
 const goldButtonProps = {
   bg: "linear-gradient(180deg, #392A16, #171008)",
@@ -35,13 +42,83 @@ export default function OnlineBattle({ onExit }: { onExit: () => void }) {
   const [turnOrderPreference, setTurnOrderPreference] = useState<TurnOrderPreference>("random");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [restoringSession, setRestoringSession] = useState(true);
+  const [gameAvailable, setGameAvailable] = useState(false);
+
+  useEffect(() => {
+    if (!isFirebaseConfigured) {
+      setRestoringSession(false);
+      return;
+    }
+    let cancelled = false;
+    const restore = async () => {
+      try {
+        const raw = window.localStorage.getItem(ONLINE_SESSION_STORAGE_KEY);
+        if (!raw) return;
+        const saved = JSON.parse(raw) as OnlineSession;
+        const restored = await resumeOnlineSession(saved);
+        if (!cancelled && restored) {
+          setSession(restored);
+        } else if (!cancelled) {
+          window.localStorage.removeItem(ONLINE_SESSION_STORAGE_KEY);
+        }
+      } catch {
+        if (!cancelled) window.localStorage.removeItem(ONLINE_SESSION_STORAGE_KEY);
+      } finally {
+        if (!cancelled) setRestoringSession(false);
+      }
+    };
+    void restore();
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     if (!session) return;
+    window.localStorage.setItem(ONLINE_SESSION_STORAGE_KEY, JSON.stringify(session));
     const unRoom = subscribeRoom(session.roomCode, setRoom);
     const unPlayers = subscribeRoomPlayers(session.roomCode, setPlayers);
-    return () => { unRoom(); unPlayers(); };
+    const unPublic = subscribePublicGame(
+      session.roomCode,
+      (snapshot) => setGameAvailable(Boolean(snapshot)),
+      () => undefined
+    );
+    return () => { unRoom(); unPlayers(); unPublic(); };
   }, [session]);
+
+  useEffect(() => {
+    if (!session || room?.status !== "waiting") return;
+    let cancelled = false;
+    const touch = () => {
+      if (!cancelled) touchWaitingRoomPresence(session).catch(() => undefined);
+    };
+    touch();
+    const heartbeat = window.setInterval(touch, 15_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(heartbeat);
+    };
+  }, [session, room?.status]);
+
+  useEffect(() => {
+    if (!session?.isHost || room?.status !== "waiting") return;
+    const cleanup = () => cleanupStaleWaitingPlayers(session).catch(() => undefined);
+    cleanup();
+    const timer = window.setInterval(cleanup, 20_000);
+    return () => window.clearInterval(timer);
+  }, [session, room?.status]);
+
+  const leaveAndExit = async () => {
+    const current = session;
+    window.localStorage.removeItem(ONLINE_SESSION_STORAGE_KEY);
+    setSession(null);
+    setRoom(null);
+    setPlayers([]);
+    setGameAvailable(false);
+    if (current) {
+      await leaveOnlineRoom(current).catch(() => undefined);
+    }
+    onExit();
+  };
 
   if (!isFirebaseConfigured) {
     return (
@@ -53,8 +130,17 @@ export default function OnlineBattle({ onExit }: { onExit: () => void }) {
     );
   }
 
-  if (session && room?.status !== "waiting") {
-    return <OnlineGameScreen session={session} onLeave={onExit} />;
+  if (session && (room?.status === "playing" || room?.status === "finished" || gameAvailable)) {
+    return <OnlineGameScreen session={session} onLeave={leaveAndExit} />;
+  }
+
+  if (restoringSession) {
+    return (
+      <LobbyShell>
+        <Heading size="md" color="#F3E5BF">オンライン対戦を復元しています…</Heading>
+        <Text color="#C8BBA3">再読み込み前の部屋を確認しています。</Text>
+      </LobbyShell>
+    );
   }
 
   if (session) {
@@ -96,7 +182,7 @@ export default function OnlineBattle({ onExit }: { onExit: () => void }) {
           <Text textAlign="center" color="#C8BBA3" fontSize={{ base: "md", md: "lg" }} lineHeight="1.8">部屋を作ったプレイヤーが開始するまでお待ちください。</Text>
         )}
         {error && <Text color="#E6A3A3" fontSize="md">{error}</Text>}
-        <Button variant="outline" borderColor="rgba(215,181,109,.28)" color="#D8C7A8" onClick={onExit}>退出</Button>
+        <Button variant="outline" borderColor="rgba(215,181,109,.28)" color="#D8C7A8" onClick={() => void leaveAndExit()}>退出</Button>
       </LobbyShell>
     );
   }
