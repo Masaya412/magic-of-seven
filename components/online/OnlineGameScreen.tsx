@@ -39,6 +39,24 @@ import type {
 
 const HIDDEN_PLACEHOLDER: Card = { id: "hidden", number: 1, magic: "truth" };
 
+type SyncMetrics = {
+  actionType: OnlineActionType | null;
+  writeAckMs: number | null;
+  hostReceiveMs: number | null;
+  hostProcessMs: number | null;
+  officialTotalMs: number | null;
+  updatedAtMs: number | null;
+};
+
+const EMPTY_SYNC_METRICS: SyncMetrics = {
+  actionType: null,
+  writeAckMs: null,
+  hostReceiveMs: null,
+  hostProcessMs: null,
+  officialTotalMs: null,
+  updatedAtMs: null,
+};
+
 export default function OnlineGameScreen({
   session,
   onLeave,
@@ -68,6 +86,8 @@ export default function OnlineGameScreen({
     label: string;
   } | null>(null);
   const [syncElapsedMs, setSyncElapsedMs] = useState(0);
+  const [syncDebugOpen, setSyncDebugOpen] = useState(false);
+  const [syncMetrics, setSyncMetrics] = useState<SyncMetrics>(EMPTY_SYNC_METRICS);
   const previewTimerRef = useRef<number | null>(null);
   const previousDraftRoundRef = useRef<number | null>(null);
   const previousPublicRef = useRef<{ revision: number; phase: PublicGameSnapshot["phase"] } | null>(null);
@@ -176,6 +196,26 @@ export default function OnlineGameScreen({
     if (pending && publicGame && publicGame.revision > pending.baseRevision) {
       const totalMs = Math.round(performance.now() - pending.startedAt);
       console.info(`[online-sync] ${pending.type} official snapshot: ${totalMs}ms`);
+
+      const debug = publicGame.syncDebug;
+      const matchesPending =
+        debug &&
+        debug.actorPlayerId === session.playerId &&
+        debug.actionType === pending.type;
+
+      setSyncMetrics((previous) => ({
+        actionType: pending.type,
+        writeAckMs: previous.actionType === pending.type ? previous.writeAckMs : null,
+        hostReceiveMs: matchesPending
+          ? Math.max(0, debug.hostReceivedAtMs - debug.clientSentAtMs)
+          : previous.hostReceiveMs,
+        hostProcessMs: matchesPending
+          ? Math.max(0, debug.hostCommitRequestedAtMs - debug.hostTransactionStartedAtMs)
+          : previous.hostProcessMs,
+        officialTotalMs: totalMs,
+        updatedAtMs: Date.now(),
+      }));
+
       pendingActionRef.current = null;
       setOptimisticPlay(null);
       setSyncElapsedMs(totalMs);
@@ -299,6 +339,14 @@ export default function OnlineGameScreen({
     setSubmitting(true);
     setError("");
     setSyncElapsedMs(0);
+    setSyncMetrics({
+      actionType: type,
+      writeAckMs: null,
+      hostReceiveMs: null,
+      hostProcessMs: null,
+      officialTotalMs: null,
+      updatedAtMs: null,
+    });
     const startedAt = performance.now();
     pendingActionRef.current = {
       startedAt,
@@ -329,7 +377,14 @@ export default function OnlineGameScreen({
 
       const writeStartedAt = performance.now();
       await submitOnlineAction(session, type, payload);
-      console.info(`[online-sync] ${type} action write acknowledged: ${Math.round(performance.now() - writeStartedAt)}ms`);
+      const writeAckMs = Math.round(performance.now() - writeStartedAt);
+      console.info(`[online-sync] ${type} action write acknowledged: ${writeAckMs}ms`);
+      setSyncMetrics((previous) => ({
+        ...previous,
+        actionType: type,
+        writeAckMs,
+        updatedAtMs: previous.officialTotalMs !== null ? Date.now() : previous.updatedAtMs,
+      }));
     } catch (e) {
       submitLockRef.current = false;
       setSubmitting(false);
@@ -344,6 +399,54 @@ export default function OnlineGameScreen({
       setError(e instanceof Error ? e.message : "操作を送信できませんでした。");
     }
   };
+
+  const syncDiagnostic = (
+    <Box w="full" maxW="760px" mx="auto">
+      <Button
+        size="sm"
+        variant="outline"
+        borderColor="rgba(215,181,109,.34)"
+        color="#D8C7A8"
+        onClick={() => setSyncDebugOpen((value) => !value)}
+      >
+        {syncDebugOpen ? "同期診断を隠す" : "同期診断を表示"}
+      </Button>
+      {syncDebugOpen && (
+        <Box
+          mt="3"
+          p={{ base: "3", md: "4" }}
+          border="1px solid rgba(215,181,109,.26)"
+          bg="rgba(0,0,0,.32)"
+          borderRadius="8px"
+        >
+          <Text color="#F0D58E" fontWeight="700" mb="2">スマホ同期診断</Text>
+          <Text color="#AFA38D" fontSize="xs" mb="3">
+            直近のあなたの操作を計測します。ホスト到達時間は端末時計を使うため概算です。
+          </Text>
+          <SimpleGrid columns={{ base: 1, sm: 2 }} gap="2">
+            <SyncMetricRow label="① Firestore書込確定" value={syncMetrics.writeAckMs} />
+            <SyncMetricRow label="② ホスト到達" value={syncMetrics.hostReceiveMs} approximate />
+            <SyncMetricRow label="③ ホスト処理" value={syncMetrics.hostProcessMs} />
+            <SyncMetricRow
+              label={submitting ? "④ 正式反映まで（計測中）" : "④ 正式反映まで（合計）"}
+              value={submitting ? syncElapsedMs : syncMetrics.officialTotalMs}
+              live={submitting}
+            />
+          </SimpleGrid>
+          {syncMetrics.actionType ? (
+            <Text mt="3" color="#958A77" fontSize="xs">操作: {syncMetrics.actionType}</Text>
+          ) : (
+            <Text mt="3" color="#958A77" fontSize="xs">カードを1回操作すると計測結果が表示されます。</Text>
+          )}
+          {(submitting ? syncElapsedMs : syncMetrics.officialTotalMs ?? 0) >= 3000 && (
+            <Text mt="2" color="#E8B57A" fontSize="sm" fontWeight="600">
+              3秒以上かかっています。4項目のうち大きい値を確認してください。
+            </Text>
+          )}
+        </Box>
+      )}
+    </Box>
+  );
 
   if (!publicGame || !privateGame) {
     return (
@@ -488,6 +591,7 @@ export default function OnlineGameScreen({
             <Text>あなたの獲得済み {privateGame.draftSelectionsCount}枚</Text>
             <Text>このラウンド {publicGame.draftSelectedCount} / {playerCount} 選択済み</Text>
           </HStack>
+          {syncDiagnostic}
         </VStack>
       </OnlineShell>
     );
@@ -695,6 +799,7 @@ export default function OnlineGameScreen({
         <DrawnCardOverlay card={drawnCardNotice} onContinue={() => setDrawnCardNotice(null)} />
       )}
 
+      {syncDiagnostic}
       {error && <Text color="#E6A3A3">{error}</Text>}
       {submitting && (
         <Box
@@ -714,6 +819,40 @@ export default function OnlineGameScreen({
         </Box>
       )}
     </OnlineShell>
+  );
+}
+
+function SyncMetricRow({
+  label,
+  value,
+  approximate = false,
+  live = false,
+}: {
+  label: string;
+  value: number | null;
+  approximate?: boolean;
+  live?: boolean;
+}) {
+  const display = value === null
+    ? "未計測"
+    : value >= 1000
+      ? `${(value / 1000).toFixed(2)}秒`
+      : `${Math.round(value)}ms`;
+  const slow = (value ?? 0) >= 1500;
+
+  return (
+    <HStack
+      justify="space-between"
+      gap="3"
+      px="3"
+      py="2"
+      border="1px solid rgba(215,181,109,.16)"
+      borderRadius="6px"
+      bg="rgba(255,255,255,.025)"
+    >
+      <Text color="#CFC0A6" fontSize="sm">{label}{approximate ? "（概算）" : ""}</Text>
+      <Text color={slow ? "#F0B07A" : live ? "#F0D58E" : "#F3E5BF"} fontSize="sm" fontWeight="700">{display}</Text>
+    </HStack>
   );
 }
 
