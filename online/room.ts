@@ -31,6 +31,7 @@ import { auth, db } from "./firebase";
 import type {
   HostGameState,
   OnlineAction,
+  OnlineDraftPick,
   OnlineActionPreview,
   OnlineActionPreviewPhase,
   OnlineActionPayload,
@@ -452,10 +453,22 @@ export async function submitOnlineAction(
   const { db } = requireFirebase();
   const clientSentAtMs = Date.now();
 
-  // ホスト自身の操作は actions コレクションを経由せず直接処理する。
-  // 「action作成 → ホストがsnapshot受信」の1往復を省けるため、体感速度が大きく改善する。
+  // ホスト自身の操作はコレクション経由せず直接処理する。
   if (session.isHost) {
     await processHostActionDirect(session.roomCode, session.uid, type, payload, clientSentAtMs);
+    return;
+  }
+
+  // v20: ドラフトは通常手番の actions キューから分離する。
+  // ドラフトは「各プレイヤーが1枚選ぶ」だけなので、UID固定の専用documentへ直接setする。
+  // action自動ID作成・processed更新・通常アクションqueryを通さず、ホストがdraftPicksだけを監視できる。
+  if (type === "draftPick") {
+    await setDoc(doc(db, "rooms", session.roomCode, "draftPicks", session.uid), {
+      actorUid: session.uid,
+      cardId: payload.cardId,
+      clientSentAtMs,
+      createdAt: serverTimestamp(),
+    } satisfies OnlineDraftPick);
     return;
   }
 
@@ -501,46 +514,144 @@ export function startHostActionProcessor(roomCode: string): Unsubscribe {
   const { db } = requireFirebase();
   let chain = Promise.resolve();
   const processing = new Set<string>();
+  const processingDraft = new Set<string>();
 
-  return onSnapshot(
+  const unActions = onSnapshot(
     query(
       collection(db, "rooms", roomCode, "actions"),
       where("processed", "==", false)
     ),
     { includeMetadataChanges: true },
     (snap) => {
-    const pending = snap.docs
-      .filter((d) => {
-        const action = d.data() as OnlineAction;
-        // addDoc直後のローカル未確定スナップショットは処理しない。
-        // サーバーへ確定する前にTransactionを開始すると409 already-exists競合の原因になる。
-        return !d.metadata.hasPendingWrites && !action.processed && !processing.has(d.id);
-      })
-      .sort((a, b) => {
-        const at = (a.data().createdAt as { toMillis?: () => number } | undefined)?.toMillis?.() ?? 0;
-        const bt = (b.data().createdAt as { toMillis?: () => number } | undefined)?.toMillis?.() ?? 0;
-        return at - bt;
-      });
-
-    for (const actionDoc of pending) {
-      const actionId = actionDoc.id;
-      processing.add(actionId);
-
-      chain = chain
-        .then(() => processAction(roomCode, actionId, actionDoc.data() as OnlineAction))
-        .catch((error) => {
-          const code = (error as { code?: string } | null)?.code;
-          if (code === "already-exists" || code === "aborted") {
-            console.warn("online action transaction conflict", actionId, code);
-            return;
-          }
-          console.error("online action error", error);
+      const pending = snap.docs
+        .filter((d) => {
+          const action = d.data() as OnlineAction;
+          return !d.metadata.hasPendingWrites && !action.processed && !processing.has(d.id);
         })
-        .finally(() => {
-          processing.delete(actionId);
+        .sort((a, b) => {
+          const at = (a.data().createdAt as { toMillis?: () => number } | undefined)?.toMillis?.() ?? 0;
+          const bt = (b.data().createdAt as { toMillis?: () => number } | undefined)?.toMillis?.() ?? 0;
+          return at - bt;
         });
+
+      for (const actionDoc of pending) {
+        const actionId = actionDoc.id;
+        processing.add(actionId);
+        chain = chain
+          .then(() => processAction(roomCode, actionId, actionDoc.data() as OnlineAction))
+          .catch((error) => {
+            const code = (error as { code?: string } | null)?.code;
+            if (code === "already-exists" || code === "aborted") {
+              console.warn("online action transaction conflict", actionId, code);
+              return;
+            }
+            console.error("online action error", error);
+          })
+          .finally(() => processing.delete(actionId));
+      }
     }
+  );
+
+  // v20: ドラフト専用監視。通常アクションqueueとは完全に分離する。
+  const unDraftPicks = onSnapshot(
+    collection(db, "rooms", roomCode, "draftPicks"),
+    { includeMetadataChanges: true },
+    (snap) => {
+      const pending = snap.docs
+        .filter((d) => !d.metadata.hasPendingWrites && !processingDraft.has(d.id))
+        .sort((a, b) => {
+          const at = (a.data().createdAt as { toMillis?: () => number } | undefined)?.toMillis?.() ?? 0;
+          const bt = (b.data().createdAt as { toMillis?: () => number } | undefined)?.toMillis?.() ?? 0;
+          return at - bt;
+        });
+
+      for (const pickDoc of pending) {
+        const uid = pickDoc.id;
+        processingDraft.add(uid);
+        chain = chain
+          .then(() => processDraftPick(roomCode, uid, pickDoc.data() as OnlineDraftPick))
+          .catch((error) => console.error("online draft pick error", error))
+          .finally(() => processingDraft.delete(uid));
+      }
+    }
+  );
+
+  return () => {
+    unActions();
+    unDraftPicks();
+  };
+}
+
+async function processDraftPick(
+  roomCode: string,
+  pickUid: string,
+  pick: OnlineDraftPick
+) {
+  const { db } = requireFirebase();
+  const pickRef = doc(db, "rooms", roomCode, "draftPicks", pickUid);
+  const stateRef = doc(db, "rooms", roomCode, "system", "state");
+  const hostReceivedAtMs = Date.now();
+  if (pick.clientSentAtMs) {
+    console.info(`[online-sync] draftPick host received after ${hostReceivedAtMs - pick.clientSentAtMs}ms`);
+  }
+  const hostTransactionStartedAtMs = Date.now();
+  const transactionStartedAt = performance.now();
+
+  await runTransaction(db, async (tx) => {
+    const stateSnap = await tx.get(stateRef);
+    if (!stateSnap.exists()) {
+      tx.delete(pickRef);
+      return;
+    }
+
+    const hostState = decodeHostGameState(stateSnap.data() as StoredHostGameState);
+    const actorPlayerId = Object.entries(hostState.playerUids).find(
+      ([, actorUid]) => actorUid === pick.actorUid
+    )?.[0];
+
+    if (!actorPlayerId || pick.actorUid !== pickUid || hostState.game.phase !== "draft") {
+      tx.delete(pickRef);
+      return;
+    }
+
+    // すでにこのラウンドで処理済みなら、再送された専用documentだけ除去する。
+    if (hostState.pendingDraftPicks[actorPlayerId]) {
+      tx.delete(pickRef);
+      return;
+    }
+
+    let nextHostState: HostGameState;
+    try {
+      nextHostState = applySimultaneousDraftPick(hostState, actorPlayerId, pick.cardId);
+    } catch {
+      tx.delete(pickRef);
+      return;
+    }
+
+    const willAdvanceRound =
+      Object.keys(hostState.pendingDraftPicks).length + 1 >= hostState.game.players.length;
+    const syncDebug: OnlineSyncDebugSnapshot = {
+      actionType: "draftPick",
+      actorPlayerId,
+      clientSentAtMs: pick.clientSentAtMs ?? hostReceivedAtMs,
+      hostReceivedAtMs,
+      hostTransactionStartedAtMs,
+      hostCommitRequestedAtMs: Date.now(),
+    };
+
+    tx.set(stateRef, encodeHostGameState(nextHostState));
+    writeViews(
+      tx,
+      roomCode,
+      nextHostState,
+      "draftPick",
+      willAdvanceRound ? "all" : [actorPlayerId],
+      syncDebug
+    );
+    tx.delete(pickRef);
   });
+
+  console.info(`[online-sync] draftPick host transaction: ${Math.round(performance.now() - transactionStartedAt)}ms`);
 }
 
 async function processHostActionDirect(

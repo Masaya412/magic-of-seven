@@ -127,6 +127,14 @@ export type OnlineActionPayload = {
   targetCardId?: string;
 };
 
+
+export type OnlineDraftPick = {
+  actorUid: string;
+  cardId: string;
+  clientSentAtMs?: number;
+  createdAt?: unknown;
+};
+
 export type OnlineAction = {
   actorUid: string;
   type: OnlineActionType;
