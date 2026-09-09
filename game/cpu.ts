@@ -168,6 +168,95 @@ function futureHandValue(cpu: Player, cardUsed: Card): number {
 }
 
 
+
+function knownMagicCount(state: GameState, cpu: Player, magic: Card["magic"]): number {
+  let count = 0;
+
+  for (const card of state.graveyard) if (card.magic === magic) count++;
+  for (const player of state.players) {
+    for (const stack of player.field) {
+      if (stack.baseCard.magic === magic) count++;
+      for (const effect of stack.effects) {
+        if ((effect.isFaceUp || effect.placedByPlayerId === cpu.id) && effect.card.magic === magic) count++;
+      }
+    }
+  }
+  for (const card of cpu.hand) if (card.magic === magic) count++;
+
+  return Math.min(7, count);
+}
+
+function estimatedOpponentBetrayRisk(state: GameState, cpu: Player): number {
+  // 相手の手札の中身は見ない。公開済みカードと自分の既知情報だけから、
+  // まだ裏切りが残っていそうかを確率的なリスクとして推定する。
+  const knownBetrays = knownMagicCount(state, cpu, "betray");
+  const remainingBetrays = Math.max(0, 7 - knownBetrays);
+  const opponentHandCount = state.players
+    .filter((p) => p.id !== cpu.id)
+    .reduce((sum, p) => sum + p.hand.length, 0);
+
+  const knownCards =
+    state.graveyard.length +
+    state.players.reduce((sum, p) =>
+      sum + p.field.length + p.field.reduce((eSum, stack) =>
+        eSum + stack.effects.filter((e) => e.isFaceUp || e.placedByPlayerId === cpu.id).length, 0
+      ), 0
+    ) +
+    cpu.hand.length;
+  const unknownCards = Math.max(1, 49 - knownCards);
+  const singleCardChance = Math.min(0.95, remainingBetrays / unknownCards);
+  return Math.min(1, 1 - Math.pow(1 - singleCardChance, opponentHandCount));
+}
+
+function pointRoleScore(state: GameState, cpu: Player, card: Card, level: number): number {
+  // 低数字は効果用、高数字は得点用という役割分担。
+  // ただしモラトリアム/復活などの強効果は高数字でも効果として保持する。
+  const n = card.number;
+  let score = 0;
+  if (n <= 2) score -= level === 13 ? 5.2 : level === 12 ? 4.2 : 3.2;
+  else if (n === 3) score -= level === 13 ? 3.4 : level === 12 ? 2.7 : 2.0;
+  else if (n === 4) score -= level === 13 ? 1.2 : 0.7;
+  else if (n === 5) score += 1.0;
+  else if (n === 6) score += 2.6;
+  else if (n === 7) score += 4.4;
+
+  if (card.magic === "moratorium" && state.deck.length > 0) {
+    score -= level === 13 ? 8.5 : level === 12 ? 7.0 : 5.6;
+  }
+
+  if (card.magic === "revive") {
+    const targets = state.graveyard.filter((c) => c.number === card.number && c.id !== card.id);
+    if (targets.length) {
+      const best = Math.max(...targets.map(cardRecoveryValue));
+      score -= Math.min(9, best * (level === 13 ? 0.72 : level === 12 ? 0.60 : 0.48));
+    }
+  }
+
+  // 効果用の低数字が同種で残っているなら、高数字の同種カードは点に回しやすい。
+  const lowerSameMagic = cpu.hand.some(
+    (c) => c.id !== card.id && c.magic === card.magic && c.number <= Math.max(3, card.number - 2)
+  );
+  if (lowerSameMagic && n >= 5 && card.magic !== "moratorium" && card.magic !== "revive") score += 1.5;
+
+  return score;
+}
+
+function pointExposurePenalty(state: GameState, cpu: Player, card: Card, level: number): number {
+  if (card.number < 5) return 0;
+  const risk = estimatedOpponentBetrayRisk(state, cpu);
+  const ownExistingHigh = cpu.field.filter((s) => Math.max(0, knownStackValue(s, cpu.id)) >= 5).length;
+  const concentration = ownExistingHigh >= 2 ? 0.78 : ownExistingHigh === 1 ? 0.35 : 0;
+  const levelWeight = level === 13 ? 1.55 : level === 12 ? 1.25 : 0.95;
+  return card.number * risk * levelWeight + concentration;
+}
+
+function effectEfficiencyBonus(card: Card, level: number): number {
+  // 効果に使うなら数字が低いカードほど機会損失が小さい。
+  // Lv13ほどこの役割分担をはっきりさせる。
+  const weight = level === 13 ? 0.58 : level === 12 ? 0.45 : 0.32;
+  return (8 - card.number) * weight;
+}
+
 function maxVisibleOpponentStackValue(state: GameState, cpuId: string): number {
   return Math.max(
     0,
@@ -243,20 +332,29 @@ function proactiveSelfBetrayValue(
   level: number
 ): number {
   if (level < 12) return Number.NEGATIVE_INFINITY;
-  if (!hasSecondBetray(cpu, card.id)) return Number.NEGATIVE_INFINITY;
+  const secondBetrays = cpu.hand
+    .filter((c) => c.id !== card.id && c.magic === "betray")
+    .sort((a, b) => a.number - b.number);
+  if (!secondBetrays.length) return Number.NEGATIVE_INFINITY;
   if (cpu.hand.length < 4) return Number.NEGATIVE_INFINITY;
   if (unknownEffectCount(stack, cpu.id) > 0) return Number.NEGATIVE_INFINITY;
 
   const value = knownStackValue(stack, cpu.id);
-  if (value <= 0 || value > 4) return Number.NEGATIVE_INFINITY;
+  if (value <= 0) return Number.NEGATIVE_INFINITY;
 
-  // 一時的に自分の低得点スタックを負にして伏せ札をブラフ化し、
-  // 後続の裏切りで再反転できる余裕がある時だけ候補にする。
-  // 常用すると弱くなるため、リード中・手札に余裕がある時に限定して小さめに評価。
   const lead = ownLeadMargin(state, cpu);
-  const leadBonus = lead >= 4 ? 1.5 : lead >= 0 ? 0.65 : -1.25;
-  const levelBonus = level === 13 ? 1.35 : 0.45;
-  return 1.3 + (5 - value) * 0.42 + leadBonus + levelBonus;
+  const lowCostPair = (8 - card.number) * 0.42 + (8 - secondBetrays[0].number) * 0.34;
+  const remainingTurns = cpu.hand.length;
+  const canAffordTwoStep = remainingTurns >= 5 || lead >= 4;
+  if (!canAffordTwoStep) return Number.NEGATIVE_INFINITY;
+
+  // 2枚の裏切りを自分の場へ重ねると最終的には符号が元に戻る。
+  // 純粋な得点増ではないため常用せず、低コストの裏切り2枚・十分な手数・
+  // ある程度のリードがある時だけ「読みにくい伏せ札の塊を作る」ブラフとして採用する。
+  const stackFit = value <= 4 ? 2.2 : level === 13 && value <= 7 ? 0.9 : -2.0;
+  const leadBonus = lead >= 6 ? 2.2 : lead >= 2 ? 1.0 : lead >= 0 ? 0.2 : -2.4;
+  const levelBonus = level === 13 ? 1.7 : 0.5;
+  return stackFit + leadBonus + levelBonus + lowCostPair;
 }
 
 function draftValue(card: Card, level: number, drafted: Card[] = []): number {
@@ -307,8 +405,16 @@ function draftValue(card: Card, level: number, drafted: Card[] = []): number {
           : 0.22
     );
 
-    // Lv12/13ほど高数字を確実に確保する。
-    value += card.number * (level === 13 ? 0.34 : level === 12 ? 0.24 : 0.15);
+    // 高数字は得点源、低数字は効果用として取り分ける。
+    // モラトリアム/復活は数字に関係なく強い効果として確保する。
+    const lowEffectEfficiency = (8 - card.number) * (level === 13 ? 0.30 : level === 12 ? 0.23 : 0.16);
+    if (["destroy", "guard", "double", "betray", "truth"].includes(card.magic)) value += lowEffectEfficiency;
+    if (card.number >= 6 && card.magic !== "moratorium" && card.magic !== "revive") {
+      value += card.number * (level === 13 ? 0.44 : level === 12 ? 0.32 : 0.22);
+    }
+    if (card.magic === "moratorium" || card.magic === "revive") {
+      value += level === 13 ? 1.8 : level === 12 ? 1.3 : 0.9;
+    }
   }
 
   const noise = level === 11 ? Math.random() * 0.10 : level === 12 ? Math.random() * 0.025 : 0;
@@ -334,12 +440,27 @@ function eliteTakeTurn(state: GameState, cpu: Player, level: number): GameState 
     // 素点化。終盤、特に最後の1枚では高数字を確実に点へ変える価値を上げる。
     const tacticalValue = tacticalCardValue(state, cpu, card, level);
     const strategyWeight = level === 13 ? 0.92 : level === 12 ? 0.68 : 0.42;
+    // Lv11+では「とりあえず点として置く」を弱める。
+    // 効果カードは、有効な使い道がある限り素点化より効果発動を優先しやすくする。
+    const effectCardPenalty =
+      card.magic === "moratorium" ? 5.8 + levelBonus * 1.15 :
+      card.magic === "revive" ? 5.0 + levelBonus * 1.00 :
+      card.magic === "double" ? 3.6 + levelBonus * 0.75 :
+      card.magic === "betray" ? 3.5 + levelBonus * 0.75 :
+      card.magic === "destroy" ? 3.2 + levelBonus * 0.70 :
+      card.magic === "guard" ? 2.2 + levelBonus * 0.45 :
+      card.magic === "truth" ? 1.4 + levelBonus * 0.30 : 0;
+    const roleScore = pointRoleScore(state, cpu, card, level);
+    const exposurePenalty = pointExposurePenalty(state, cpu, card, level);
     const pointScore =
       card.number * immediateWeight +
-      (endgame ? card.number * 0.20 : 0) +
-      (finalTurn ? card.number * 0.36 : 0) +
+      roleScore +
+      (endgame ? card.number * 0.18 : 0) +
+      (finalTurn ? card.number * 0.42 : 0) +
       futureHandValue(cpu, card) * futureWeight -
-      (!finalTurn ? tacticalValue * strategyWeight : tacticalValue * 0.22);
+      (!finalTurn ? tacticalValue * strategyWeight : tacticalValue * 0.18) -
+      (!finalTurn ? effectCardPenalty : effectCardPenalty * 0.28) -
+      (!finalTurn ? exposurePenalty : exposurePenalty * 0.25);
     actions.push({
       score: pointScore,
       label: `point:${card.id}`,
@@ -350,6 +471,7 @@ function eliteTakeTurn(state: GameState, cpu: Player, level: number): GameState 
   for (const card of cpu.hand) {
     const opportunityCost = card.number * (finalTurn ? 1.00 : endgame ? 0.78 : 0.58);
     const preservedFuture = futureHandValue(cpu, card) * futureWeight;
+    const efficientEffect = effectEfficiencyBonus(card, level);
 
     if (card.magic === "double") {
       for (const stack of cpu.field) {
@@ -362,8 +484,8 @@ function eliteTakeTurn(state: GameState, cpu: Player, level: number): GameState 
           (e) => (e.isFaceUp || e.placedByPlayerId === cpu.id) && e.card.magic === "guard"
         ) ? 0.65 : 0;
         const score =
-          rawGain * (1.25 + levelBonus * 0.10) +
-          protectSynergy -
+          rawGain * (1.52 + levelBonus * 0.14) +
+          protectSynergy + 2.2 + levelBonus * 0.45 + efficientEffect -
           opportunityCost -
           unknowns * uncertaintyPenalty +
           preservedFuture;
@@ -385,7 +507,11 @@ function eliteTakeTurn(state: GameState, cpu: Player, level: number): GameState 
           const swing = Math.abs(before) * 2;
           actions.push({
             score:
-              swing * (1.28 + levelBonus * 0.10) -
+              swing * (1.28 + levelBonus * 0.10) +
+              efficientEffect +
+              (stack.effects.filter((e) => e.placedByPlayerId === cpu.id && e.card.magic === "betray").length % 2 === 1
+                ? (level === 13 ? 4.8 : 3.0)
+                : 0) -
               opportunityCost * 0.48 -
               hidden * uncertaintyPenalty +
               preservedFuture +
@@ -398,7 +524,7 @@ function eliteTakeTurn(state: GameState, cpu: Player, level: number): GameState 
           if (Number.isFinite(bluff)) {
             actions.push({
               score:
-                bluff - opportunityCost * 0.35 + preservedFuture +
+                bluff + efficientEffect - opportunityCost * 0.35 + preservedFuture +
                 handTempoBonus(cpu, level) * 0.08,
               label: `betray-self-trap:${card.id}:${stack.id}`,
               run: () => stackEffect(state, cpu.id, card.id, stack.id),
@@ -415,8 +541,8 @@ function eliteTakeTurn(state: GameState, cpu: Player, level: number): GameState 
           // 公開値がプラスの場に裏切りを置くと、概ね 2*before の点差改善。
           const swing = before > 0 ? before * 2 : before * 0.25;
           const score =
-            swing * (1.13 + levelBonus * 0.07) +
-            leaderBonus +
+            swing * (1.34 + levelBonus * 0.10) +
+            leaderBonus + 2.0 + levelBonus * 0.42 + efficientEffect +
             hidden * 0.18 -
             opportunityCost -
             hidden * uncertaintyPenalty +
@@ -444,7 +570,7 @@ function eliteTakeTurn(state: GameState, cpu: Player, level: number): GameState 
           (leadMargin > 0 ? 0.70 : 0) -
           (hasKnownGuard ? 0.85 : 0);
         actions.push({
-          score: protection - opportunityCost - hidden * uncertaintyPenalty * 0.35 + preservedFuture,
+          score: protection + 1.6 + levelBonus * 0.30 + efficientEffect - opportunityCost * 0.82 - hidden * uncertaintyPenalty * 0.35 + preservedFuture,
           label: `guard:${card.id}:${stack.id}`,
           run: () => stackEffect(state, cpu.id, card.id, stack.id),
         });
@@ -475,7 +601,7 @@ function eliteTakeTurn(state: GameState, cpu: Player, level: number): GameState 
           if (stack.effects.length === 0) swing *= 0.48;
 
           actions.push({
-            score: swing * (1.08 + levelBonus * 0.06) - opportunityCost + preservedFuture,
+            score: swing * (1.24 + levelBonus * 0.09) + 2.0 + levelBonus * 0.40 + efficientEffect - opportunityCost * 0.82 + preservedFuture,
             label: `destroy:${card.id}:${stack.id}`,
             run: () => useDestroy(state, cpu.id, card.id, stack.id),
           });
@@ -495,8 +621,9 @@ function eliteTakeTurn(state: GameState, cpu: Player, level: number): GameState 
           const score =
             informationValue +
             Math.min(2.0, baseThreat * 0.16) +
-            leaderBonus -
-            opportunityCost * 0.72 +
+            leaderBonus +
+            1.2 + levelBonus * 0.22 + efficientEffect -
+            opportunityCost * 0.62 +
             preservedFuture;
           actions.push({
             score,
@@ -520,6 +647,7 @@ function eliteTakeTurn(state: GameState, cpu: Player, level: number): GameState 
         const tempoBonus = level === 13 ? 7.0 : level === 12 ? 5.4 : 4.0;
         const score =
           recovered * (1.02 + levelBonus * 0.08) +
+          efficientEffect +
           followUp * (level === 13 ? 0.88 : level === 12 ? 0.68 : 0.48) -
           opportunityCost * 0.30 +
           tempoBonus +
@@ -560,7 +688,8 @@ function eliteTakeTurn(state: GameState, cpu: Player, level: number): GameState 
           expectedDraw * (0.82 + levelBonus * 0.06) +
           tempo +
           handPreservation +
-          reviveChain -
+          reviveChain +
+          efficientEffect -
           opportunityCost * 0.20 +
           preservedFuture +
           handTempoBonus(cpu, level) * 0.34,
@@ -568,6 +697,37 @@ function eliteTakeTurn(state: GameState, cpu: Player, level: number): GameState 
         run: () => useMoratorium(state, cpu.id, card.id),
       });
     }
+  }
+
+  // Lv11+では「有効な効果があるのに素点化する」挙動を抑える。
+  // 効果候補が一定以上なら、ポイント候補との僅差比較ではなく効果側を明確に優先する。
+  const effectActions = actions.filter((a) => !a.label.startsWith("point:"));
+  const bestEffect = [...effectActions].sort((a, b) => b.score - a.score)[0];
+  const bestPointAction = [...actions]
+    .filter((a) => a.label.startsWith("point:"))
+    .sort((a, b) => b.score - a.score)[0];
+  const effectThreshold = level === 13 ? 3.0 : level === 12 ? 3.8 : 4.6;
+  // 高数字を置く判断も残すが、強効果は別格。低数字の効果カードはほぼ効果用にする。
+  const bestPointCard = bestPointAction?.label.startsWith("point:")
+    ? cpu.hand.find((c) => bestPointAction.label === `point:${c.id}`)
+    : undefined;
+  const bestEffectCardId = bestEffect?.label.split(":")[1];
+  const bestEffectCard = cpu.hand.find((c) => c.id === bestEffectCardId);
+  const premiumEffect = bestEffectCard?.magic === "moratorium" || bestEffectCard?.magic === "revive";
+  const lowNumberEffect = (bestEffectCard?.number ?? 7) <= 3;
+  const highPoint = (bestPointCard?.number ?? 0) >= 6;
+  const baseEffectPreference = level === 13 ? 4.8 : level === 12 ? 3.7 : 2.6;
+  const effectPreference =
+    baseEffectPreference +
+    (premiumEffect ? (level === 13 ? 4.5 : 3.2) : 0) +
+    (lowNumberEffect ? 2.3 : 0) -
+    (highPoint && !premiumEffect ? 1.8 : 0);
+  if (
+    bestEffect &&
+    bestEffect.score >= effectThreshold &&
+    (!bestPointAction || bestEffect.score + effectPreference >= bestPointAction.score)
+  ) {
+    return bestEffect.run();
   }
 
   // Lv11+は「手札を減らさない連鎖」を主戦略にする。
@@ -579,7 +739,7 @@ function eliteTakeTurn(state: GameState, cpu: Player, level: number): GameState 
   const bestNonTempo = [...actions]
     .filter((a) => !a.label.startsWith("moratorium:") && !a.label.startsWith("revive:"))
     .sort((a, b) => b.score - a.score)[0];
-  const tempoTolerance = level === 13 ? 4.5 : level === 12 ? 3.2 : 2.0;
+  const tempoTolerance = level === 13 ? 7.0 : level === 12 ? 5.2 : 3.6;
   if (bestTempo && (!bestNonTempo || bestTempo.score + tempoTolerance >= bestNonTempo.score)) {
     // Lv13ほど多少の即時得点を捨てても追加手数を取りにいく。
     if (level >= 12 || bestTempo.score >= bestNonTempo.score - tempoTolerance) {
@@ -590,7 +750,18 @@ function eliteTakeTurn(state: GameState, cpu: Player, level: number): GameState 
   // リード中は守りを、負けている時は攻撃を少し強める。
   const adjusted = actions.map((action) => {
     let situational = 0;
-    if (leadMargin >= 5 && (action.label.startsWith("guard:") || action.label.startsWith("point:"))) situational += 0.75;
+    if (leadMargin >= 5 && action.label.startsWith("guard:")) situational += 0.75;
+    if (action.label.startsWith("point:")) {
+      const cardId = action.label.slice("point:".length);
+      const pointCard = cpu.hand.find((c) => c.id === cardId);
+      if (pointCard) {
+        // 高数字は点に回す。ただし相手に裏切りが残っていそうで、すでに高得点を並べている時は
+        // 得点源を一か所に偏らせず、効果で盤面を揺らす選択も残す。
+        if (pointCard.number >= 6) situational += level === 13 ? 2.2 : level === 12 ? 1.6 : 1.0;
+        if (pointCard.number <= 3) situational -= level === 13 ? 3.0 : level === 12 ? 2.2 : 1.5;
+        situational -= pointExposurePenalty(state, cpu, pointCard, level) * 0.45;
+      }
+    }
     if (leadMargin <= -5 && (action.label.startsWith("betray:") || action.label.startsWith("destroy:"))) situational += 1.0;
     if (action.label.startsWith("moratorium:")) {
       situational += level === 13 ? 4.6 : level === 12 ? 3.5 : 2.6;
