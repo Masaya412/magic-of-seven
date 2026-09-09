@@ -121,5 +121,6 @@ export type OnlineAction = {
   type: OnlineActionType;
   payload: OnlineActionPayload;
   processed: boolean;
+  clientSentAtMs?: number;
   createdAt?: unknown;
 };

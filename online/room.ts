@@ -326,6 +326,7 @@ export async function submitOnlineAction(
     type,
     payload,
     processed: false,
+    clientSentAtMs: Date.now(),
     createdAt: serverTimestamp(),
   } satisfies OnlineAction);
 }
@@ -388,7 +389,7 @@ export function startHostActionProcessor(roomCode: string): Unsubscribe {
       processing.add(actionId);
 
       chain = chain
-        .then(() => processAction(roomCode, actionId))
+        .then(() => processAction(roomCode, actionId, actionDoc.data() as OnlineAction))
         .catch((error) => {
           const code = (error as { code?: string } | null)?.code;
           if (code === "already-exists" || code === "aborted") {
@@ -440,16 +441,25 @@ async function processHostActionDirect(
   });
 }
 
-async function processAction(roomCode: string, actionId: string) {
+async function processAction(
+  roomCode: string,
+  actionId: string,
+  action: OnlineAction
+) {
   const { db } = requireFirebase();
   const actionRef = doc(db, "rooms", roomCode, "actions", actionId);
   const stateRef = doc(db, "rooms", roomCode, "system", "state");
   const roomRef = doc(db, "rooms", roomCode);
 
+  // action自体はonSnapshotですでにサーバー確定済みの内容を受け取っている。
+  // Transaction内でもう一度actionRefを読むとFirestoreへの余分なreadが1回増えるため、
+  // snapshotのデータをそのまま使い、stateだけをTransactionで読む。
+  const hostReceivedAt = Date.now();
+  if (action.clientSentAtMs) {
+    console.info(`[online-sync] ${action.type} host received after ${hostReceivedAt - action.clientSentAtMs}ms`);
+  }
+  const transactionStartedAt = performance.now();
   await runTransaction(db, async (tx) => {
-    const actionSnap = await tx.get(actionRef);
-    if (!actionSnap.exists()) return;
-    const action = actionSnap.data() as OnlineAction;
     if (action.processed) return;
 
     const stateSnap = await tx.get(stateRef);
@@ -491,6 +501,7 @@ async function processAction(roomCode: string, actionId: string) {
       tx.update(roomRef, { status: "finished", updatedAt: serverTimestamp() });
     }
   });
+  console.info(`[online-sync] ${action.type} host transaction: ${Math.round(performance.now() - transactionStartedAt)}ms`);
 }
 
 
