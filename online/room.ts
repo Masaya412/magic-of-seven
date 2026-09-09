@@ -40,6 +40,7 @@ import type {
   OnlineSession,
   PrivateGameSnapshot,
   PublicGameSnapshot,
+  OnlineSyncDebugSnapshot,
 } from "./types";
 
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -313,11 +314,12 @@ export async function submitOnlineAction(
   payload: OnlineActionPayload
 ) {
   const { db } = requireFirebase();
+  const clientSentAtMs = Date.now();
 
   // ホスト自身の操作は actions コレクションを経由せず直接処理する。
   // 「action作成 → ホストがsnapshot受信」の1往復を省けるため、体感速度が大きく改善する。
   if (session.isHost) {
-    await processHostActionDirect(session.roomCode, session.uid, type, payload);
+    await processHostActionDirect(session.roomCode, session.uid, type, payload, clientSentAtMs);
     return;
   }
 
@@ -326,7 +328,7 @@ export async function submitOnlineAction(
     type,
     payload,
     processed: false,
-    clientSentAtMs: Date.now(),
+    clientSentAtMs,
     createdAt: serverTimestamp(),
   } satisfies OnlineAction);
 }
@@ -409,11 +411,14 @@ async function processHostActionDirect(
   roomCode: string,
   actorUid: string,
   type: OnlineActionType,
-  payload: OnlineActionPayload
+  payload: OnlineActionPayload,
+  clientSentAtMs: number
 ) {
   const { db } = requireFirebase();
   const stateRef = doc(db, "rooms", roomCode, "system", "state");
   const roomRef = doc(db, "rooms", roomCode);
+  const hostReceivedAtMs = Date.now();
+  const hostTransactionStartedAtMs = Date.now();
 
   await runTransaction(db, async (tx) => {
     const stateSnap = await tx.get(stateRef);
@@ -432,8 +437,17 @@ async function processHostActionDirect(
       payload
     );
 
+    const syncDebug: OnlineSyncDebugSnapshot = {
+      actionType: type,
+      actorPlayerId,
+      clientSentAtMs,
+      hostReceivedAtMs,
+      hostTransactionStartedAtMs,
+      hostCommitRequestedAtMs: Date.now(),
+    };
+
     tx.set(stateRef, encodeHostGameState(nextHostState));
-    writeViews(tx, roomCode, nextHostState, type, privateTargets);
+    writeViews(tx, roomCode, nextHostState, type, privateTargets, syncDebug);
 
     if (nextHostState.game.phase === "result") {
       tx.update(roomRef, { status: "finished", updatedAt: serverTimestamp() });
@@ -458,6 +472,7 @@ async function processAction(
   if (action.clientSentAtMs) {
     console.info(`[online-sync] ${action.type} host received after ${hostReceivedAt - action.clientSentAtMs}ms`);
   }
+  const hostTransactionStartedAtMs = Date.now();
   const transactionStartedAt = performance.now();
   await runTransaction(db, async (tx) => {
     if (action.processed) return;
@@ -491,8 +506,16 @@ async function processAction(
     }
 
     const next = nextHostState.game;
+    const syncDebug: OnlineSyncDebugSnapshot = {
+      actionType: action.type,
+      actorPlayerId,
+      clientSentAtMs: action.clientSentAtMs ?? hostReceivedAt,
+      hostReceivedAtMs: hostReceivedAt,
+      hostTransactionStartedAtMs,
+      hostCommitRequestedAtMs: Date.now(),
+    };
     tx.set(stateRef, encodeHostGameState(nextHostState));
-    writeViews(tx, roomCode, nextHostState, action.type, privateTargets);
+    writeViews(tx, roomCode, nextHostState, action.type, privateTargets, syncDebug);
     tx.update(actionRef, { processed: true, processedAt: serverTimestamp() });
 
     // 毎手番の room.updatedAt 更新は同期に不要なので省略する。
@@ -688,7 +711,8 @@ function applyValidatedAction(
 
 function createPublicSnapshot(
   state: HostGameState,
-  actionType: OnlineActionType | null
+  actionType: OnlineActionType | null,
+  syncDebug: OnlineSyncDebugSnapshot | null = null
 ): StoredPublicGameSnapshot {
   const { game, revision } = state;
   let lastAction = game.lastAction;
@@ -734,6 +758,7 @@ function createPublicSnapshot(
     lastActionActorId: game.lastActionActorId,
     lastActionCard,
     lastActionCardHidden,
+    syncDebug,
     resultGameStateJson: game.phase === "result" ? JSON.stringify(game) : null,
   };
 }
@@ -769,10 +794,11 @@ function writeViews(
   roomCode: string,
   state: HostGameState,
   actionType: OnlineActionType | null,
-  privateTargets: "all" | string[]
+  privateTargets: "all" | string[],
+  syncDebug: OnlineSyncDebugSnapshot | null = null
 ) {
   const { db } = requireFirebase();
-  tx.set(doc(db, "rooms", roomCode, "system", "public"), createPublicSnapshot(state, actionType));
+  tx.set(doc(db, "rooms", roomCode, "system", "public"), createPublicSnapshot(state, actionType, syncDebug));
 
   const targetIds =
     privateTargets === "all"

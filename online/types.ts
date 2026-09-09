@@ -47,6 +47,15 @@ export type PublicOnlinePlayer = {
   field: PublicFieldStack[];
 };
 
+export type OnlineSyncDebugSnapshot = {
+  actionType: OnlineActionType;
+  actorPlayerId: string;
+  clientSentAtMs: number;
+  hostReceivedAtMs: number;
+  hostTransactionStartedAtMs: number;
+  hostCommitRequestedAtMs: number;
+};
+
 export type PublicGameSnapshot = {
   revision: number;
   phase: GameState["phase"];
@@ -65,6 +74,7 @@ export type PublicGameSnapshot = {
   lastActionCard: Card | null;
   lastActionCardHidden: boolean;
   resultGameState: GameState | null;
+  syncDebug?: OnlineSyncDebugSnapshot | null;
 };
 
 export type PrivateGameSnapshot = {
