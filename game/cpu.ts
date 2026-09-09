@@ -119,8 +119,8 @@ function cardRecoveryValue(card: Card): number {
     guard: 2.0,
     double: 4.5,
     betray: 4.1,
-    moratorium: 1.8,
-    revive: 2.4,
+    moratorium: 5.6,
+    revive: 5.0,
     truth: 1.5,
   };
   return card.number + bonus[card.magic];
@@ -207,18 +207,27 @@ function tacticalCardValue(state: GameState, cpu: Player, card: Card, level: num
     case "truth":
       return hiddenEnemy * 0.72;
     case "revive":
-      return sameNumberGrave ? cardRecoveryValue(sameNumberGrave) * 0.95 : 0;
+      // Lv11+は「1手使っても手札枚数を減らさない」ことを最重要級に評価。
+      // 特にモラトリアム/復活を拾える復活は、さらに次の手数へ連鎖できる。
+      if (!sameNumberGrave) return 0;
+      return (
+        cardRecoveryValue(sameNumberGrave) * 1.18 +
+        (sameNumberGrave.magic === "moratorium" ? 5.5 : 0) +
+        (sameNumberGrave.magic === "revive" ? 4.2 : 0) +
+        (level - 10) * 1.25
+      );
     case "moratorium":
-      // 1枚使って1枚引くので、通常の手より手札を1枚多く維持できる。高難易度ほどこの手数差を重視。
+      // モラトリアムは手札を減らさずターンを消費できるため、Lv11+の中心戦略にする。
+      // 山札が残っている限り、高数字カードであっても単純な点数化より優先しやすくする。
       return state.deck.length > 0
-        ? 2.8 + cpu.hand.length * 0.42 + (level - 10) * 0.85
+        ? 7.0 + Math.min(6, state.deck.length) * 0.35 + cpu.hand.length * 0.55 + (level - 10) * 1.55
         : 0;
   }
 }
 
 function handTempoBonus(cpu: Player, level: number): number {
   // 手札が多いほど選択肢と残り手数が増える。Lv13ではかなり重く評価する。
-  const weight = level === 13 ? 1.55 : level === 12 ? 1.10 : 0.72;
+  const weight = level === 13 ? 2.35 : level === 12 ? 1.75 : 1.20;
   return cpu.hand.length * weight;
 }
 
@@ -256,8 +265,8 @@ function draftValue(card: Card, level: number, drafted: Card[] = []): number {
     guard: 2.0,
     double: 4.2,
     betray: 3.9,
-    moratorium: 1.5,
-    revive: 2.2,
+    moratorium: 6.8,
+    revive: 6.0,
     truth: 1.2,
   };
 
@@ -274,14 +283,29 @@ function draftValue(card: Card, level: number, drafted: Card[] = []): number {
 
     if (card.magic === "double") value += highPointCards * 0.95 + Math.max(0, 2 - doubles) * 0.35;
     if (card.magic === "guard") value += highPointCards * 0.52 + Math.max(0, 2 - guards) * 0.22;
-    if (card.magic === "revive" && sameNumber > 0) value += 1.8 + sameNumber * 0.50;
-    if (card.magic === "revive") value += drafted.some((c) => c.number === card.number && c.magic !== "revive") ? 0.75 : 0;
+    if (card.magic === "revive" && sameNumber > 0) value += 3.2 + sameNumber * 0.85;
+    if (card.magic === "revive") {
+      const sameNumberTargets = drafted.filter((c) => c.number === card.number && c.magic !== "revive");
+      value += sameNumberTargets.length ? 1.4 : 0;
+      if (sameNumberTargets.some((c) => c.magic === "moratorium")) value += 3.2;
+      if (drafted.some((c) => c.magic === "revive" && c.number === card.number)) value += 1.0;
+    }
+    if (card.magic === "moratorium") {
+      // 高難易度は低数字だけでなく高数字のモラトリアムも「追加手数」として確保する。
+      value += level === 13 ? 3.8 : level === 12 ? 3.0 : 2.3;
+      value += drafted.filter((c) => c.magic === "revive" && c.number === card.number).length * 2.4;
+    }
     if (card.magic === "destroy" || card.magic === "betray") value += Math.max(0, 3 - attacks) * 0.30;
     if (card.magic === "truth") value += drafted.some((c) => c.magic === "destroy" || c.magic === "betray") ? 0.30 : 0;
-    if (card.magic === "moratorium" && card.number <= 3) value += 0.45;
 
     // 同じ魔法への寄り過ぎは抑えるが、強カードの重複は許容する。
-    value -= sameMagic * (card.magic === "double" || card.magic === "betray" ? 0.08 : 0.22);
+    value -= sameMagic * (
+      card.magic === "moratorium" || card.magic === "revive"
+        ? 0.02
+        : card.magic === "double" || card.magic === "betray"
+          ? 0.08
+          : 0.22
+    );
 
     // Lv12/13ほど高数字を確実に確保する。
     value += card.number * (level === 13 ? 0.34 : level === 12 ? 0.24 : 0.15);
@@ -487,18 +511,21 @@ function eliteTakeTurn(state: GameState, cpu: Player, level: number): GameState 
       const candidates = state.graveyard.filter((c) => c.number === card.number && c.id !== card.id);
       for (const target of candidates) {
         let recovered = cardRecoveryValue(target);
-        // 復活で再利用すると特に強い札を明示的に高評価。
-        if (target.magic === "double" || target.magic === "betray" || target.magic === "destroy") recovered += 1.3;
-        if (target.magic === "moratorium" && state.deck.length > 0) recovered += 0.8;
+        // Lv11+は復活を「手札維持 + 次の手数確保」の主軸にする。
+        // モラトリアムを拾えば、次の手でも手札を減らさず山札へアクセスできる。
+        if (target.magic === "moratorium" && state.deck.length > 0) recovered += level === 13 ? 8.0 : level === 12 ? 6.5 : 5.2;
+        if (target.magic === "revive") recovered += level === 13 ? 6.0 : level === 12 ? 4.8 : 3.8;
+        if (target.magic === "double" || target.magic === "betray" || target.magic === "destroy") recovered += 1.0;
         const followUp = tacticalCardValue(state, cpu, target, level);
-        const tempoBonus = level === 13 ? 3.8 : level === 12 ? 2.7 : 1.7;
+        const tempoBonus = level === 13 ? 7.0 : level === 12 ? 5.4 : 4.0;
         const score =
-          recovered * (0.88 + levelBonus * 0.07) +
-          followUp * (level === 13 ? 0.72 : level === 12 ? 0.52 : 0.32) -
-          opportunityCost * 0.48 +
+          recovered * (1.02 + levelBonus * 0.08) +
+          followUp * (level === 13 ? 0.88 : level === 12 ? 0.68 : 0.48) -
+          opportunityCost * 0.30 +
           tempoBonus +
-          (endgame ? 1.05 : 0.35) +
-          preservedFuture;
+          (endgame ? 2.25 : 1.10) +
+          preservedFuture +
+          handTempoBonus(cpu, level) * 0.30;
         actions.push({
           score,
           label: `revive:${card.id}:${target.id}`,
@@ -522,19 +549,41 @@ function eliteTakeTurn(state: GameState, cpu: Player, level: number): GameState 
       const unknownCardCount = Math.max(1, 49 - knownCards.length);
       const expectedDraw = Math.max(1, Math.min(7, (totalNumbers - knownSum) / unknownCardCount));
       const handPreservation =
-        (level === 13 ? 4.2 : level === 12 ? 3.0 : 1.9) +
-        cpu.hand.length * (level === 13 ? 0.42 : level === 12 ? 0.28 : 0.16);
-      const tempo = endgame ? 2.25 : cpu.hand.length <= 4 ? 1.25 : 0.75;
+        (level === 13 ? 9.0 : level === 12 ? 7.1 : 5.4) +
+        cpu.hand.length * (level === 13 ? 0.72 : level === 12 ? 0.55 : 0.40);
+      const tempo = endgame ? 4.8 : cpu.hand.length <= 4 ? 3.2 : 2.0;
+      const reviveChain = state.graveyard.some((g) =>
+        cpu.hand.some((h) => h.magic === "revive" && h.number === g.number && h.id !== g.id)
+      ) ? (level === 13 ? 2.4 : level === 12 ? 1.7 : 1.1) : 0;
       actions.push({
         score:
-          expectedDraw * (0.72 + levelBonus * 0.05) +
+          expectedDraw * (0.82 + levelBonus * 0.06) +
           tempo +
-          handPreservation -
-          opportunityCost * 0.38 +
-          preservedFuture,
+          handPreservation +
+          reviveChain -
+          opportunityCost * 0.20 +
+          preservedFuture +
+          handTempoBonus(cpu, level) * 0.34,
         label: `moratorium:${card.id}`,
         run: () => useMoratorium(state, cpu.id, card.id),
       });
+    }
+  }
+
+  // Lv11+は「手札を減らさない連鎖」を主戦略にする。
+  // モラトリアム/復活が十分有効な局面では、単発の点数行動より優先する。
+  const tempoActions = actions.filter(
+    (a) => a.label.startsWith("moratorium:") || a.label.startsWith("revive:")
+  );
+  const bestTempo = [...tempoActions].sort((a, b) => b.score - a.score)[0];
+  const bestNonTempo = [...actions]
+    .filter((a) => !a.label.startsWith("moratorium:") && !a.label.startsWith("revive:"))
+    .sort((a, b) => b.score - a.score)[0];
+  const tempoTolerance = level === 13 ? 4.5 : level === 12 ? 3.2 : 2.0;
+  if (bestTempo && (!bestNonTempo || bestTempo.score + tempoTolerance >= bestNonTempo.score)) {
+    // Lv13ほど多少の即時得点を捨てても追加手数を取りにいく。
+    if (level >= 12 || bestTempo.score >= bestNonTempo.score - tempoTolerance) {
+      return bestTempo.run();
     }
   }
 
@@ -543,8 +592,14 @@ function eliteTakeTurn(state: GameState, cpu: Player, level: number): GameState 
     let situational = 0;
     if (leadMargin >= 5 && (action.label.startsWith("guard:") || action.label.startsWith("point:"))) situational += 0.75;
     if (leadMargin <= -5 && (action.label.startsWith("betray:") || action.label.startsWith("destroy:"))) situational += 1.0;
-    if (level >= 12 && cpu.hand.length >= 5 && action.label.startsWith("moratorium:")) situational += level === 13 ? 2.0 : 1.1;
-    if (level === 13 && cpu.hand.length >= 4 && action.label.startsWith("revive:")) situational += 1.15;
+    if (action.label.startsWith("moratorium:")) {
+      situational += level === 13 ? 4.6 : level === 12 ? 3.5 : 2.6;
+      if (cpu.hand.length <= 4) situational += 1.6;
+    }
+    if (action.label.startsWith("revive:")) {
+      situational += level === 13 ? 4.1 : level === 12 ? 3.0 : 2.1;
+      if (cpu.hand.length <= 4) situational += 1.3;
+    }
     if (leadMargin >= 4 && action.label.startsWith("betray-self-trap:")) situational += level === 13 ? 1.0 : 0.35;
     if (action.label.startsWith("betray-self-flip:")) situational += level === 13 ? 1.6 : level === 12 ? 1.05 : 0.55;
     if (finalTurn && action.label.startsWith("truth:")) situational -= 1.4;
