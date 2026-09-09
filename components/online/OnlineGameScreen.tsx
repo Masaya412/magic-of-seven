@@ -60,8 +60,43 @@ export default function OnlineGameScreen({
   const [syncSlow, setSyncSlow] = useState(false);
   const [syncError, setSyncError] = useState("");
   const [resultRevealReady, setResultRevealReady] = useState(false);
+  const [optimisticDraftCard, setOptimisticDraftCard] = useState<Card | null>(null);
+  const [optimisticPlay, setOptimisticPlay] = useState<{
+    publicGame: PublicGameSnapshot;
+    privateGame: PrivateGameSnapshot;
+    baseRevision: number;
+    label: string;
+  } | null>(null);
+  const [syncElapsedMs, setSyncElapsedMs] = useState(0);
+  const previewTimerRef = useRef<number | null>(null);
+  const previousDraftRoundRef = useRef<number | null>(null);
   const previousPublicRef = useRef<{ revision: number; phase: PublicGameSnapshot["phase"] } | null>(null);
   const submitLockRef = useRef(false);
+  const pendingActionRef = useRef<{ startedAt: number; baseRevision: number; type: OnlineActionType } | null>(null);
+  const syncTickerRef = useRef<number | null>(null);
+
+  const queuePreview = (phase: OnlineActionPreview["phase"]) => {
+    if (previewTimerRef.current !== null) {
+      window.clearTimeout(previewTimerRef.current);
+    }
+    // プレビューはゲーム進行に不要なので少し遅延させる。
+    // 直後にカード確定された場合はキャンセルし、実際のaction通信を最優先する。
+    previewTimerRef.current = window.setTimeout(() => {
+      previewTimerRef.current = null;
+      setOnlineActionPreview(session, phase).catch(() => undefined);
+    }, 140);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (previewTimerRef.current !== null) {
+        window.clearTimeout(previewTimerRef.current);
+      }
+      if (syncTickerRef.current !== null) {
+        window.clearInterval(syncTickerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     setSyncError("");
@@ -96,6 +131,29 @@ export default function OnlineGameScreen({
   }, [publicGame, privateGame, session.roomCode]);
 
   useEffect(() => {
+    if (!publicGame || publicGame.phase !== "draft") {
+      setOptimisticDraftCard(null);
+      previousDraftRoundRef.current = null;
+      return;
+    }
+
+    const previousRound = previousDraftRoundRef.current;
+    if (previousRound !== null && previousRound !== publicGame.draftRound) {
+      setOptimisticDraftCard(null);
+    }
+    previousDraftRoundRef.current = publicGame.draftRound;
+
+    // サーバー側private snapshotが追いついたらローカル仮表示から正式データへ移行する。
+    if (
+      optimisticDraftCard &&
+      privateGame?.draftSubmitted &&
+      privateGame.draftSelectedCard?.id === optimisticDraftCard.id
+    ) {
+      setOptimisticDraftCard(null);
+    }
+  }, [publicGame?.phase, publicGame?.draftRound, privateGame?.draftSubmitted, privateGame?.draftSelectedCard?.id, optimisticDraftCard]);
+
+  useEffect(() => {
     if (publicGame?.phase !== "result") {
       setResultRevealReady(false);
       return;
@@ -114,12 +172,25 @@ export default function OnlineGameScreen({
   }, [privateGame?.revision]);
 
   useEffect(() => {
+    const pending = pendingActionRef.current;
+    if (pending && publicGame && publicGame.revision > pending.baseRevision) {
+      const totalMs = Math.round(performance.now() - pending.startedAt);
+      console.info(`[online-sync] ${pending.type} official snapshot: ${totalMs}ms`);
+      pendingActionRef.current = null;
+      setOptimisticPlay(null);
+      setSyncElapsedMs(totalMs);
+      if (syncTickerRef.current !== null) {
+        window.clearInterval(syncTickerRef.current);
+        syncTickerRef.current = null;
+      }
+    }
+
     submitLockRef.current = false;
     setSubmitting(false);
     setSelected(null);
     setMode("none");
     if (publicGame?.phase === "playing") {
-      setOnlineActionPreview(session, "idle").catch(() => undefined);
+      queuePreview("idle");
     }
   }, [publicGame?.revision, publicGame?.phase, session]);
 
@@ -149,28 +220,127 @@ export default function OnlineGameScreen({
     if (!publicGame || publicGame.phase !== "playing") return;
     const current = publicGame.turnOrder[publicGame.currentTurn];
     if (current === session.playerId && !awaitingOpponentContinue) {
-      setOnlineActionPreview(session, selected ? (mode === "none" ? "cardSelected" : "targetSelecting") : "thinking").catch(() => undefined);
+      queuePreview(selected ? (mode === "none" ? "cardSelected" : "targetSelecting") : "thinking");
     } else {
-      setOnlineActionPreview(session, "idle").catch(() => undefined);
+      queuePreview("idle");
     }
   }, [publicGame?.currentTurn, publicGame?.phase, session, awaitingOpponentContinue]);
+
+  const applyOptimisticPlay = (
+    type: OnlineActionType,
+    payload: { cardId: string; targetStackId?: string; targetCardId?: string }
+  ) => {
+    if (!publicGame || !privateGame || publicGame.phase !== "playing") return;
+
+    const card = privateGame.hand.find((item) => item.id === payload.cardId);
+    if (!card) return;
+
+    const nextPublic = structuredClone(publicGame);
+    const nextPrivate = structuredClone(privateGame);
+    const me = nextPublic.players.find((player) => player.id === session.playerId);
+    if (!me) return;
+
+    const removeFromHand = () => {
+      nextPrivate.hand = nextPrivate.hand.filter((item) => item.id !== card.id);
+      me.handCount = Math.max(0, me.handCount - 1);
+    };
+
+    let label = "操作を反映しました。サーバーと同期中…";
+
+    if (type === "placePoint") {
+      removeFromHand();
+      me.field.push({
+        id: `optimistic-${card.id}`,
+        ownerId: session.playerId,
+        baseCard: card,
+        effects: [],
+      });
+      label = `${MAGIC_NAMES[card.magic]} ${card.number} をポイントとして仮反映しました`;
+    } else if (type === "stackEffect" && payload.targetStackId) {
+      removeFromHand();
+      const target = nextPublic.players
+        .flatMap((player) => player.field)
+        .find((stack) => stack.id === payload.targetStackId);
+      target?.effects.push({ id: card.id, card: null, isFaceUp: false });
+      label = "伏せカードを仮反映しました";
+    } else if (type === "revive" && payload.targetCardId) {
+      removeFromHand();
+      const target = nextPublic.graveyard.find((item) => item.id === payload.targetCardId);
+      if (target) {
+        nextPublic.graveyard = nextPublic.graveyard.filter((item) => item.id !== target.id);
+        nextPrivate.hand.push(target);
+        me.handCount += 1;
+      }
+      nextPublic.graveyard.push(card);
+      label = "復活の結果を仮反映しました";
+    } else if (type === "destroy" || type === "truth") {
+      removeFromHand();
+      nextPublic.graveyard.push(card);
+      label = type === "destroy" ? "破壊の魔法を使用しました。結果を同期中…" : "真実の魔法を使用しました。公開結果を同期中…";
+    } else if (type === "moratorium") {
+      // 引くカードの正体はサーバー側だけが知るので、手札内容は正式応答まで変えない。
+      // 公開枚数だけ、山札が残っていれば「1枚使って1枚引く」ため維持する。
+      nextPublic.graveyard.push(card);
+      if (nextPublic.deckCount > 0) nextPublic.deckCount -= 1;
+      label = "モラトリアムを使用しました。引いたカードを同期中…";
+    }
+
+    setOptimisticPlay({
+      publicGame: nextPublic,
+      privateGame: nextPrivate,
+      baseRevision: publicGame.revision,
+      label,
+    });
+  };
 
   const send = async (type: OnlineActionType, payload: { cardId: string; targetStackId?: string; targetCardId?: string }) => {
     if (submitting || submitLockRef.current) return;
     submitLockRef.current = true;
     setSubmitting(true);
     setError("");
+    setSyncElapsedMs(0);
+    const startedAt = performance.now();
+    pendingActionRef.current = {
+      startedAt,
+      baseRevision: publicGame?.revision ?? -1,
+      type,
+    };
+    if (syncTickerRef.current !== null) window.clearInterval(syncTickerRef.current);
+    syncTickerRef.current = window.setInterval(() => {
+      setSyncElapsedMs(Math.round(performance.now() - startedAt));
+    }, 250);
     try {
-      // プレビュー書き込みは表示用なので、行動送信の前に待たない。
-      // これだけでFirestoreへの余分な1往復をクリティカルパスから外せる。
-      if (type !== "draftPick") {
-        setOnlineActionPreview(session, "committing").catch(() => undefined);
+      // 実際のactionを最優先する。未送信のプレビュー更新があればキャンセルして、
+      // Firestoreのwrite queueでプレビューがactionより先に並ぶのを防ぐ。
+      if (previewTimerRef.current !== null) {
+        window.clearTimeout(previewTimerRef.current);
+        previewTimerRef.current = null;
       }
+
+      if (type === "draftPick") {
+        const picked = privateGame?.draftPack.find((card) => card.id === payload.cardId) ?? null;
+        if (picked) setOptimisticDraftCard(picked);
+      } else {
+        applyOptimisticPlay(type, payload);
+        setSelected(null);
+        setMode("none");
+        queuePreview("committing");
+      }
+
+      const writeStartedAt = performance.now();
       await submitOnlineAction(session, type, payload);
+      console.info(`[online-sync] ${type} action write acknowledged: ${Math.round(performance.now() - writeStartedAt)}ms`);
     } catch (e) {
       submitLockRef.current = false;
       setSubmitting(false);
-      setOnlineActionPreview(session, "idle").catch(() => undefined);
+      if (type === "draftPick") setOptimisticDraftCard(null);
+      setOptimisticPlay(null);
+      pendingActionRef.current = null;
+      if (syncTickerRef.current !== null) {
+        window.clearInterval(syncTickerRef.current);
+        syncTickerRef.current = null;
+      }
+      queuePreview("idle");
       setError(e instanceof Error ? e.message : "操作を送信できませんでした。");
     }
   };
@@ -237,11 +407,12 @@ export default function OnlineGameScreen({
   }
 
   if (publicGame.phase === "draft") {
-    const hasSubmitted = privateGame.draftSubmitted;
+    const visibleSelectedCard = privateGame.draftSelectedCard ?? optimisticDraftCard;
+    const hasSubmitted = privateGame.draftSubmitted || Boolean(optimisticDraftCard);
     const playerCount = publicGame.players.length;
-    const othersSelected = Math.max(0, publicGame.draftSelectedCount - (hasSubmitted ? 1 : 0));
-    const visibleDraftSelections = privateGame.draftSelectedCard
-      ? [...privateGame.draftSelections, privateGame.draftSelectedCard].filter(
+    const othersSelected = Math.max(0, publicGame.draftSelectedCount - (privateGame.draftSubmitted ? 1 : 0));
+    const visibleDraftSelections = visibleSelectedCard
+      ? [...privateGame.draftSelections, visibleSelectedCard].filter(
           (card, index, cards) => cards.findIndex((item) => item.id === card.id) === index
         )
       : privateGame.draftSelections;
@@ -266,7 +437,11 @@ export default function OnlineGameScreen({
                   <MagicCard
                     key={card.id}
                     card={card}
-                    onClick={() => !submitting && send("draftPick", { cardId: card.id })}
+                    onClick={() => {
+                      if (submitting) return;
+                      setOptimisticDraftCard(card);
+                      void send("draftPick", { cardId: card.id });
+                    }}
                   />
                 ))}
               </HStack>
@@ -286,10 +461,13 @@ export default function OnlineGameScreen({
                 他のプレイヤーがこのラウンドのカードを選ぶまでお待ちください。
                 全員の選択が完了すると自動で次へ進みます。
               </Text>
-              {privateGame.draftSelectedCard && (
+              {visibleSelectedCard && (
                 <VStack mt="5" gap="3">
                   <Text color="#F3E5BF" fontWeight="700">このラウンドであなたが選んだカード</Text>
-                  <MagicCard card={privateGame.draftSelectedCard} />
+                  <MagicCard card={visibleSelectedCard} />
+                  {optimisticDraftCard && !privateGame.draftSubmitted && (
+                    <Text color="#AFA38D" fontSize="sm">送信中…（選択はすぐ画面に反映しています）</Text>
+                  )}
                 </VStack>
               )}
             </Box>
@@ -315,25 +493,27 @@ export default function OnlineGameScreen({
     );
   }
 
-  const currentPlayerId = publicGame.turnOrder[publicGame.currentTurn];
+  const playPublicGame = optimisticPlay?.publicGame ?? publicGame;
+  const playPrivateGame = optimisticPlay?.privateGame ?? privateGame;
+  const currentPlayerId = playPublicGame.turnOrder[playPublicGame.currentTurn];
   const myTurn = currentPlayerId === session.playerId;
   const currentActionPreview = actionPreviews.find((preview) => preview.playerId === currentPlayerId && preview.actorUid !== session.uid);
   const interactionsLocked = submitting || awaitingOpponentContinue;
   const canAct = myTurn && !interactionsLocked;
-  const lastActor = publicGame.lastActionActorId
-    ? publicGame.players.find((p) => p.id === publicGame.lastActionActorId)
+  const lastActor = playPublicGame.lastActionActorId
+    ? playPublicGame.players.find((p) => p.id === playPublicGame.lastActionActorId)
     : null;
   const reviveTargets = selected
-    ? publicGame.graveyard.filter((c) => c.number === selected.number && c.id !== selected.id)
+    ? playPublicGame.graveyard.filter((c) => c.number === selected.number && c.id !== selected.id)
     : [];
 
   const useSpecial = () => {
     if (!selected || !canAct) return;
-    if (["guard", "double", "betray"].includes(selected.magic)) { setMode("stack"); setOnlineActionPreview(session, "targetSelecting").catch(() => undefined); }
-    else if (selected.magic === "destroy") { setMode("destroy"); setOnlineActionPreview(session, "targetSelecting").catch(() => undefined); }
-    else if (selected.magic === "truth") { setMode("truth"); setOnlineActionPreview(session, "targetSelecting").catch(() => undefined); }
+    if (["guard", "double", "betray"].includes(selected.magic)) { setMode("stack"); queuePreview("targetSelecting"); }
+    else if (selected.magic === "destroy") { setMode("destroy"); queuePreview("targetSelecting"); }
+    else if (selected.magic === "truth") { setMode("truth"); queuePreview("targetSelecting"); }
     else if (selected.magic === "moratorium") send("moratorium", { cardId: selected.id });
-    else if (selected.magic === "revive") { setMode("revive"); setOnlineActionPreview(session, "targetSelecting").catch(() => undefined); }
+    else if (selected.magic === "revive") { setMode("revive"); queuePreview("targetSelecting"); }
   };
 
   const targetStack = (stackId: string) => {
@@ -357,7 +537,7 @@ export default function OnlineGameScreen({
           <VStack align="start" gap="0">
             <Text fontSize="12px" color="#9C855D" letterSpacing=".25em">CURRENT TURN</Text>
             <Heading size="md" color="#F3E5BF">
-              {publicGame.players.find((p) => p.id === currentPlayerId)?.name ?? "-"}
+              {playPublicGame.players.find((p) => p.id === currentPlayerId)?.name ?? "-"}
             </Heading>
           </VStack>
           <Text color={myTurn ? "#EBCF8A" : "#9E917B"}>{awaitingOpponentContinue ? "他プレイヤーの行動を確認してください" : myTurn ? "あなたの手番です" : "現在のプレイヤーの行動を待っています"}</Text>
@@ -366,13 +546,13 @@ export default function OnlineGameScreen({
 
       {!myTurn && !awaitingOpponentContinue && currentActionPreview && (
         <OpponentActionTracker
-          playerName={publicGame.players.find((p) => p.id === currentPlayerId)?.name ?? "プレイヤー"}
+          playerName={playPublicGame.players.find((p) => p.id === currentPlayerId)?.name ?? "プレイヤー"}
           phase={currentActionPreview.phase}
         />
       )}
 
       <HStack justify="space-between" color="#AFA594" fontSize="md" wrap="wrap">
-        <Text>山札 {publicGame.deckCount}枚</Text>
+        <Text>山札 {playPublicGame.deckCount}枚</Text>
         <Button
           size="sm"
           variant="outline"
@@ -380,18 +560,18 @@ export default function OnlineGameScreen({
           color="#E3D1AF"
           onClick={() => setGraveOpen(true)}
         >
-          墓場 {publicGame.graveyard.length}枚を見る
+          墓場 {playPublicGame.graveyard.length}枚を見る
         </Button>
       </HStack>
 
-      {publicGame.lastAction && !awaitingOpponentContinue && (
+      {playPublicGame.lastAction && !awaitingOpponentContinue && (
         <Box px="4" py="3" bg="rgba(0,0,0,.30)" border="1px solid rgba(215,181,109,.18)" borderRadius="6px">
-          <Text fontSize="md" color="#D3C6AF">直前の行動：{publicGame.lastAction}</Text>
+          <Text fontSize="md" color="#D3C6AF">直前の行動：{playPublicGame.lastAction}</Text>
         </Box>
       )}
 
       <SimpleGrid columns={{ base: 1, md: 2 }} gap="4">
-        {publicGame.players.map((player) => (
+        {playPublicGame.players.map((player) => (
           <Box key={player.id} p="4" bg="rgba(8,9,12,.78)" border="1px solid rgba(215,181,109,.30)" borderRadius="8px">
             <HStack justify="space-between">
               <Heading size="md" color="#F2E5CB">{player.name}{player.id === session.playerId ? "（あなた）" : ""}</Heading>
@@ -420,7 +600,7 @@ export default function OnlineGameScreen({
       <Box>
         <Text fontSize="12px" color="#9C855D" letterSpacing=".25em" mb="3">YOUR HAND</Text>
         <HStack wrap="wrap" gap="3" opacity={canAct ? 1 : 0.68}>
-          {privateGame.hand.map((card) => (
+          {playPrivateGame.hand.map((card) => (
             <MagicCard
               key={card.id}
               card={card}
@@ -429,7 +609,7 @@ export default function OnlineGameScreen({
                 if (!canAct) return;
                 setSelected(card);
                 setMode("none");
-                setOnlineActionPreview(session, "cardSelected").catch(() => undefined);
+                queuePreview("cardSelected");
               }}
             />
           ))}
@@ -442,7 +622,7 @@ export default function OnlineGameScreen({
           <HStack mt="4" wrap="wrap">
             <GoldButton disabled={submitting} onClick={() => send("placePoint", { cardId: selected.id })}>ポイントとして置く</GoldButton>
             <GoldButton disabled={submitting} onClick={useSpecial}>特殊効果として使う</GoldButton>
-            <Button variant="outline" borderColor="rgba(215,181,109,.32)" color="#D9C8A8" onClick={() => { setSelected(null); setMode("none"); setOnlineActionPreview(session, "thinking").catch(() => undefined); }}>取消</Button>
+            <Button variant="outline" borderColor="rgba(215,181,109,.32)" color="#D9C8A8" onClick={() => { setSelected(null); setMode("none"); queuePreview("thinking"); }}>取消</Button>
           </HStack>
           {mode !== "none" && mode !== "revive" && (
             <Text mt="3" color="#C7B99E">対象にする場のカードを選択してください。</Text>
@@ -491,9 +671,9 @@ export default function OnlineGameScreen({
       {awaitingOpponentContinue && lastActor && (
         <ActionOverlay
           actorName={lastActor.name}
-          action={publicGame.lastAction}
-          card={publicGame.lastActionCard}
-          hidden={publicGame.lastActionCardHidden}
+          action={playPublicGame.lastAction}
+          card={playPublicGame.lastActionCard}
+          hidden={playPublicGame.lastActionCardHidden}
           label="PLAYER ACTION"
           onContinue={() => setAwaitingOpponentContinue(false)}
         />
@@ -501,7 +681,7 @@ export default function OnlineGameScreen({
 
       {graveOpen && (
         <GraveyardOverlay
-          cards={publicGame.graveyard}
+          cards={playPublicGame.graveyard}
           onClose={() => setGraveOpen(false)}
           onCardClick={setPreviewCard}
         />
@@ -516,7 +696,23 @@ export default function OnlineGameScreen({
       )}
 
       {error && <Text color="#E6A3A3">{error}</Text>}
-      {submitting && <Text color="#BDAE94" fontSize="md">操作を同期しています…</Text>}
+      {submitting && (
+        <Box
+          px="4"
+          py="3"
+          border="1px solid rgba(215,181,109,.24)"
+          bg="rgba(0,0,0,.28)"
+          borderRadius="6px"
+        >
+          <Text color="#E3D1AF" fontSize="md">
+            {optimisticPlay?.label ?? "操作を同期しています…"}
+          </Text>
+          <Text mt="1" color="#958A77" fontSize="sm">
+            画面には先に反映しています。正式同期 {Math.max(0, syncElapsedMs) / 1000 < 0.1 ? "開始中" : `${(syncElapsedMs / 1000).toFixed(1)}秒`}
+            {syncElapsedMs >= 3000 ? " — 通信に時間がかかっています" : ""}
+          </Text>
+        </Box>
+      )}
     </OnlineShell>
   );
 }
