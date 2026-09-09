@@ -69,6 +69,15 @@ service cloud.firestore {
         allow read, update, delete: if isHost(code);
       }
 
+      // v20: ドラフト専用の軽量経路。各参加者は自分のUID documentだけ書ける。
+      // 読み取り・削除はホストだけに限定し、他参加者の選択カードは見えない。
+      match /draftPicks/{uid} {
+        allow create, update: if isMember(code)
+          && request.auth.uid == uid
+          && request.resource.data.actorUid == request.auth.uid;
+        allow read, delete: if isHost(code);
+      }
+
       match /previews/{uid} {
         allow read: if isMember(code);
         allow create, update: if isMember(code)
