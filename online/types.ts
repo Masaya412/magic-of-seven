@@ -25,6 +25,7 @@ export type OnlineRoomPlayer = {
   name: string;
   seat: number;
   joinedAt?: unknown;
+  lastSeenAt?: unknown;
 };
 
 export type PublicStackEffect = {

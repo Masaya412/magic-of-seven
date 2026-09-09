@@ -86,6 +86,10 @@ function requireFirebase() {
 
 export async function ensureAnonymousUser(): Promise<string> {
   const { auth } = requireFirebase();
+  // 再読み込み直後はFirebase Authの永続セッション復元が終わる前に
+  // currentUserが一時的にnullになることがある。ここで待たないと、
+  // 新しい匿名UIDを発行してしまい同じ部屋へ戻れなくなる。
+  await auth.authStateReady();
   if (auth.currentUser) return auth.currentUser.uid;
   const result = await signInAnonymously(auth);
   return result.user.uid;
@@ -143,6 +147,7 @@ export async function createOnlineRoom(
       name: normalizeName(name),
       seat: 0,
       joinedAt: serverTimestamp(),
+      lastSeenAt: serverTimestamp(),
     } satisfies OnlineRoomPlayer);
 
     tx.set(doc(db, "rooms", code, "seats", "0"), { uid });
@@ -197,6 +202,7 @@ export async function joinOnlineRoom(
       name: normalizeName(name),
       seat: nextSeat,
       joinedAt: serverTimestamp(),
+      lastSeenAt: serverTimestamp(),
     } satisfies OnlineRoomPlayer);
     return nextSeat;
   });
@@ -204,6 +210,136 @@ export async function joinOnlineRoom(
   const playerId = `p${seat + 1}`;
 
   return { roomCode: code, uid, playerId, isHost: false };
+}
+
+
+
+export async function resumeOnlineSession(saved: OnlineSession): Promise<OnlineSession | null> {
+  const { db } = requireFirebase();
+  const uid = await ensureAnonymousUser();
+  // 保存した匿名UIDと現在のFirebase Auth UIDが一致していることが重要。
+  // 一致しない場合は別ユーザーとして扱い、他人の席を復元しない。
+  if (uid !== saved.uid) return null;
+
+  const roomRef = doc(db, "rooms", saved.roomCode);
+  const playerRef = doc(db, "rooms", saved.roomCode, "players", uid);
+  const [roomSnap, playerSnap] = await Promise.all([getDoc(roomRef), getDoc(playerRef)]);
+  if (!roomSnap.exists() || !playerSnap.exists()) return null;
+
+  const room = roomSnap.data() as OnlineRoom;
+  const player = playerSnap.data() as OnlineRoomPlayer;
+  return {
+    roomCode: saved.roomCode,
+    uid,
+    playerId: player.playerId,
+    isHost: room.hostUid === uid,
+  };
+}
+
+export async function touchWaitingRoomPresence(session: OnlineSession): Promise<void> {
+  const { db } = requireFirebase();
+  const roomRef = doc(db, "rooms", session.roomCode);
+  const roomSnap = await getDoc(roomRef);
+  if (!roomSnap.exists()) return;
+  const room = roomSnap.data() as OnlineRoom;
+  if (room.status !== "waiting") return;
+
+  await updateDoc(doc(db, "rooms", session.roomCode, "players", session.uid), {
+    lastSeenAt: serverTimestamp(),
+  });
+}
+
+function timestampToMillis(value: unknown): number | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as { toMillis?: () => number };
+  return typeof candidate.toMillis === "function" ? candidate.toMillis() : null;
+}
+
+export async function cleanupStaleWaitingPlayers(
+  session: OnlineSession,
+  staleAfterMs = 120_000
+): Promise<void> {
+  if (!session.isHost) return;
+  const { db } = requireFirebase();
+  const roomRef = doc(db, "rooms", session.roomCode);
+  const roomSnap = await getDoc(roomRef);
+  if (!roomSnap.exists()) return;
+  const room = roomSnap.data() as OnlineRoom;
+  if (room.status !== "waiting") return;
+
+  const playersSnap = await getDocs(collection(db, "rooms", session.roomCode, "players"));
+  const now = Date.now();
+  const stalePlayers = playersSnap.docs
+    .map((snap) => snap.data() as OnlineRoomPlayer)
+    .filter((player) => {
+      if (player.uid === room.hostUid) return false;
+      const lastSeen = timestampToMillis(player.lastSeenAt) ?? timestampToMillis(player.joinedAt);
+      return lastSeen !== null && now - lastSeen > staleAfterMs;
+    });
+
+  for (const player of stalePlayers) {
+    const playerRef = doc(db, "rooms", session.roomCode, "players", player.uid);
+    const seatRef = doc(db, "rooms", session.roomCode, "seats", String(player.seat));
+    await runTransaction(db, async (tx) => {
+      const [freshRoom, freshPlayer, freshSeat] = await Promise.all([
+        tx.get(roomRef),
+        tx.get(playerRef),
+        tx.get(seatRef),
+      ]);
+      if (!freshRoom.exists() || (freshRoom.data() as OnlineRoom).status !== "waiting") return;
+      if (!freshPlayer.exists()) return;
+      const current = freshPlayer.data() as OnlineRoomPlayer;
+      const lastSeen = timestampToMillis(current.lastSeenAt) ?? timestampToMillis(current.joinedAt);
+      if (lastSeen === null || Date.now() - lastSeen <= staleAfterMs) return;
+      if (freshSeat.exists() && (freshSeat.data() as { uid?: string }).uid === player.uid) {
+        tx.delete(seatRef);
+      }
+      tx.delete(playerRef);
+    });
+  }
+
+  // 過去バージョンや通信切断でplayersだけ消えてseatsだけ残った場合も
+  // ホストが待機中に孤立した席を回収する。これで見かけ上の満員を防ぐ。
+  const seatsSnap = await getDocs(collection(db, "rooms", session.roomCode, "seats"));
+  for (const seatDoc of seatsSnap.docs) {
+    const seatData = seatDoc.data() as { uid?: string };
+    const seatUid = seatData.uid;
+    if (!seatUid || seatUid === room.hostUid) continue;
+    const playerSnap = await getDoc(doc(db, "rooms", session.roomCode, "players", seatUid));
+    if (!playerSnap.exists()) {
+      await deleteDoc(seatDoc.ref).catch(() => undefined);
+    }
+  }
+}
+
+export async function leaveOnlineRoom(session: OnlineSession): Promise<void> {
+  const { db } = requireFirebase();
+  const roomRef = doc(db, "rooms", session.roomCode);
+  const playerRef = doc(db, "rooms", session.roomCode, "players", session.uid);
+  const previewRef = doc(db, "rooms", session.roomCode, "previews", session.uid);
+
+  // プレビューはゲーム状態ではないので退出時に常に消す。
+  await deleteDoc(previewRef).catch(() => undefined);
+
+  const roomSnap = await getDoc(roomRef).catch(() => null);
+  if (!roomSnap?.exists()) return;
+  const room = roomSnap.data() as OnlineRoom;
+
+  // 待機中だけ席を完全解放する。対戦開始後にplayerUidを差し替えると
+  // 手札や手番との対応が壊れるため、進行中の席は維持する。
+  if (room.status !== "waiting") return;
+
+  await runTransaction(db, async (tx) => {
+    const playerSnap = await tx.get(playerRef);
+    if (!playerSnap.exists()) return;
+    const player = playerSnap.data() as OnlineRoomPlayer;
+    const seatRef = doc(db, "rooms", session.roomCode, "seats", String(player.seat));
+    const seatSnap = await tx.get(seatRef);
+    if (seatSnap.exists() && (seatSnap.data() as { uid?: string }).uid === session.uid) {
+      tx.delete(seatRef);
+    }
+    tx.delete(playerRef);
+  });
 }
 
 export function subscribeRoom(
